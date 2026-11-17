@@ -177,7 +177,7 @@ Explication : affiche les serveurs connectés. Vous devez voir `10.0.0.22`. Une 
 ```
 vCenter Server (10.0.0.22)
 |
-+-- Datacenter-CLI
++-- RegionA01 (datacenter existant du lab, réutilisé)
     |
     +-- Cluster-CLI (DRS + HA)
     |   +-- esx-01a.vcf.sddc.lab
@@ -203,7 +203,7 @@ Le manuel présente les modules dans l'ordre vCenter, réseau, stockage. Pour **
 | Ordre | Section | Raison |
 | --- | --- | --- |
 | 1 | 0.4 Connexion | Accès à vCenter |
-| 2 | 1.3.1 Datacenter, cluster, hôtes | Base de l'inventaire |
+| 2 | 1.3.1 Cluster et hôtes (dans le datacenter existant) | Base de l'inventaire |
 | 3 | 2.3 VDS, port groups, VMkernel vMotion | Réseau requis par les VM et le vMotion |
 | 4 | 3.2 et 3.3 Datastores NFS et iSCSI | Stockage partagé requis par HA, DRS, vMotion |
 | 5 | 1.6 HA et DRS | Services de cluster |
@@ -605,50 +605,96 @@ Explication : montre les dossiers de l'inventaire (racine, dossiers de datacente
 Variables de session à rejouer si vous démarrez ici :
 
 ```powershell
-$dc      = Get-Datacenter -Name "Datacenter-CLI" -ErrorAction SilentlyContinue
+$dc      = Get-Datacenter -Name "RegionA01"
 $cluster = Get-Cluster -Name "Cluster-CLI" -ErrorAction SilentlyContinue
 $h1 = Get-VMHost -Name 'esx-01a.vcf.sddc.lab'
 $h2 = Get-VMHost -Name 'esx-02a.vcf.sddc.lab'
 ```
 
-Explication : récupère les objets d'inventaire créés plus loin. Les deux premières variables restent vides tant que 1.3.1 n'est pas faite.
+Explication : récupère le datacenter existant du lab et le cluster créé en 1.3.1. La variable `$cluster` reste vide tant que 1.3.1 n'est pas faite.
 
 ### 1.3.1 Datacenter, cluster et hôtes
 
-**Objectif** : construire la hiérarchie de l'inventaire et regrouper deux hôtes dans un cluster, prérequis de vMotion, HA et DRS.
+**Objectif** : créer un cluster dans le datacenter existant du lab et y regrouper les deux hôtes, prérequis de vMotion, HA et DRS.
 
-**Définition** : dans un environnement VCF, une infrastructure de base existe déjà, mais créer sa propre structure permet de comprendre la hiérarchie.
+**Définition** : l'inventaire vCenter est hiérarchique : vCenter, Datacenter, Cluster, Hôte, VM. Dans l'environnement VCF du lab, un datacenter existe déjà (`RegionA01`) et contient les deux hôtes. On y ajoute notre propre cluster `Cluster-CLI` pour comprendre la hiérarchie.
 
-```powershell
-$rootFolder = Get-Folder -NoRecursion | Select-Object -First 1
+#### Pourquoi on ne crée pas son propre datacenter (erreur rencontrée et corrigée)
+
+Première approche tentée : créer `Datacenter-CLI`, y créer `Cluster-CLI`, puis déplacer les hôtes avec `Move-VMHost`. La commande échoue avec ce message :
+
+```
+Move-VMHost: The operation for the entity "Cluster-CLI" failed with the following message: "The operation is not supported on the object."
 ```
 
-Explication : récupère le dossier racine de l'inventaire, nécessaire pour créer un datacenter.
+Explication de la cause :
+
+* Chaque hôte appartient à un datacenter, ici `RegionA01`. `Move-VMHost` déplace un hôte entre les clusters et dossiers **d'un même datacenter**, mais pas d'un datacenter à un autre. Vérification dans le lab : les deux hôtes sont bien dans `RegionA01`, et `Datacenter-CLI` n'en contenait aucun.
+* Pour changer un hôte de datacenter, il faudrait le **retirer de l'inventaire** (`Remove-VMHost`) puis le **rajouter** (`Add-VMHost`). C'est déconseillé dans ce lab.
+
+Pourquoi il ne faut pas retirer et rajouter les hôtes ici :
+
+| Raison | Détail |
+| --- | --- |
+| Le VDS est lié au datacenter | Un VDS appartient à un datacenter et ne peut pas en couvrir plusieurs. Les hôtes sont membres du VDS d'origine, et celui-ci porte leur réseau de gestion. Les détacher fait perdre la connexion à l'hôte. |
+| Les datastores et réseaux existants | Datastores partagés, port groups et VMkernel (gestion, stockage, vMotion) sont rattachés au datacenter d'origine. Dans un nouveau datacenter, il faudrait tout recréer. |
+| Services et VM déjà présents | Les VM de service `vCLS` et les VM du lab dépendent du cluster et du datacenter d'origine. |
+| Pas de secours | Le lab est imbriqué et sans console physique : une erreur de réseau de gestion n'est pas récupérable. |
+
+Conséquence pour la suite du guide : **on réutilise le datacenter `RegionA01`**. Le cluster, le VDS et le datastore cluster sont créés dans `$dc = RegionA01`. N'utilisez pas `New-Datacenter` dans ce lab. En production, on crée les datacenters avant d'y ajouter les hôtes (`Add-VMHost -Location`), de sorte qu'aucun déplacement entre datacenters ne soit nécessaire.
 
 ```powershell
-$dc = New-Datacenter -Name "Datacenter-CLI" -Location $rootFolder
+Get-Datacenter | ForEach-Object { $d = $_; Get-VMHost -Location $d | Select-Object @{N='Datacenter';E={$d.Name}}, Name }
 ```
 
-Explication : crée le Datacenter, conteneur des clusters, réseaux distribués et datastores de ce guide.
+Explication : affiche, pour chaque datacenter, les hôtes qu'il contient. Résultat attendu : `RegionA01` avec `esx-01a` et `esx-02a`. À lancer en cas d'erreur « operation is not supported on the object » pour confirmer que source et destination sont dans le même datacenter.
+
+```powershell
+$dc = Get-Datacenter -Name "RegionA01"
+```
+
+Explication : récupère le datacenter existant, qui sert de conteneur à tous les objets de ce guide. La variable `$dc` est réutilisée dans les sections suivantes.
 
 ```powershell
 $cluster = New-Cluster -Name "Cluster-CLI" -Location $dc -DrsEnabled -HAEnabled
 ```
 
-Explication : crée un cluster avec DRS et HA activés. Les réglages fins sont faits en 1.6.
+Explication : crée le cluster `Cluster-CLI` dans `RegionA01`, avec DRS (équilibrage de charge) et HA (redémarrage automatique) activés. Les réglages fins sont faits en 1.6. Si un ancien `Datacenter-CLI` a été créé par erreur, supprimez-le d'abord avec `Get-Datacenter -Name "Datacenter-CLI" | Remove-Datacenter -Confirm:$false`, sinon deux clusters portent le nom `Cluster-CLI` et les commandes deviennent ambiguës.
+
+```powershell
+Set-Cluster -Cluster $cluster -HAAdmissionControlEnabled:$false -Confirm:$false
+```
+
+Explication : désactive **temporairement** le contrôle d'admission HA. Par défaut, il réserve la capacité d'un hôte (niveau de basculement 1). Tant que le cluster ne contient qu'un seul hôte, il refuse toutes les VM avec `Insufficient resources to satisfy configured failover level for vSphere HA`, et le déplacement des hôtes reste bloqué. Il est réactivé en 1.6.1, une fois les deux hôtes dans le cluster.
 
 ```powershell
 Get-Datacenter
 Get-Cluster
 ```
 
-Explication : vérifie que `Datacenter-CLI` et `Cluster-CLI` existent.
+Explication : vérifie que `RegionA01` existe et que `Cluster-CLI` est créé à côté de `RegionA01-COMP01`.
+
+
+**Avertissement (testé dans le lab)** : la commande de mise en maintenance reste bloquée à `percent complete: 0` si l'hôte héberge encore des VM et que DRS est désactivé. Dans le lab, les hôtes sont déjà dans le cluster `RegionA01-COMP01`, où DRS et HA sont désactivés : aucune VM n'est évacuée automatiquement et la commande attend indéfiniment. Videz donc l'hôte avant de le passer en maintenance.
+
+```powershell
+Get-VMHost $h1 | Get-VM | Select-Object Name, PowerState, VMHost
+Get-Cluster -VMHost $h1 | Select-Object Name, HAEnabled, DrsEnabled, DrsAutomationLevel
+```
+
+Explication : liste les VM présentes sur `esx-01a` et l'état de HA et DRS du cluster actuel de l'hôte. Dans le lab, on trouve une VM de service `vCLS-...` et la VM `TinyLinux2`. La VM `vCLS` est gérée par vCenter et s'arrête ou se déplace toute seule à l'entrée en maintenance. Seules les autres VM doivent être déplacées à la main.
+
+```powershell
+Get-VM -Name "TinyLinux2" | Move-VM -Destination $h2 -Confirm:$false
+```
+
+Explication : migre la VM vers `esx-02a` par vMotion (VM allumée, sans coupure). Si le vMotion échoue (datastore non partagé, par exemple), éteignez la VM avec `Stop-VM -VM "TinyLinux2" -Confirm:$false`. Si une tentative précédente est restée bloquée, annulez-la d'abord avec `Get-Task -Status Running | Stop-Task -Confirm:$false`.
 
 ```powershell
 Set-VMHost -VMHost $h1 -State Maintenance -Confirm:$false
 ```
 
-Explication : place `esx-01a` en mode maintenance, état exigé pour déplacer un hôte déjà géré. Les VM qui tournent dessus doivent avoir été migrées ou arrêtées.
+Explication : place `esx-01a` en mode maintenance, état exigé pour déplacer un hôte déjà géré. Une fois l'hôte vidé, la commande se termine en quelques secondes et affiche `ConnectionState : Maintenance`. Si elle reste à 0 pendant plus d'une minute, revérifiez avec `Get-VMHost $h1 | Get-VM` ce qu'il reste sur l'hôte (ajoutez `-RunAsync` pour ne pas bloquer le terminal).
 
 ```powershell
 Move-VMHost -VMHost $h1 -Destination $cluster
@@ -661,6 +707,12 @@ Set-VMHost -VMHost $h1 -State Connected -Confirm:$false
 ```
 
 Explication : sort l'hôte du mode maintenance, il peut accueillir des VM.
+
+```powershell
+Get-VMHost $h2 | Get-VM | Where-Object { $_.Name -notlike "vCLS*" } | Move-VM -Destination $h1 -Confirm:$false
+```
+
+Explication : avant de vider `esx-02a`, déplace ses VM (sauf les VM `vCLS`, gérées par vCenter) vers `esx-01a`, qui est maintenant dans `Cluster-CLI`. Cet ordre est obligatoire : si on traitait `esx-02a` en premier, il n'aurait aucun hôte où envoyer ses VM. Le vMotion entre deux clusters du même vCenter fonctionne si le stockage est partagé et si le port group de la VM existe sur les deux hôtes. Sinon, éteignez les VM avec `Stop-VM`.
 
 ```powershell
 Set-VMHost -VMHost $h2 -State Maintenance -Confirm:$false
@@ -701,12 +753,15 @@ Get-Datastore | Select-Object Name, Type, CapacityGB, FreeSpaceGB
 
 Explication : choisissez un datastore **partagé** par les deux hôtes (NFS, VMFS iSCSI ou vSAN). Évitez un datastore local, qui bloquerait le vMotion.
 
+Dans le lab HOL, seuls les datastores préconfigurés existent à ce stade : `ds-iscsi01` (VMFS, environ 85 Go dont 55 Go libres) et `ds-nfs01` (NFS, environ 5,8 Go libres seulement). Les datastores `ds-nfs-cli` et `ds-iscsi-cli` ne sont créés qu'au module 3 (3.2 et 3.3). On utilise donc **`ds-iscsi01`**, le seul assez grand pour héberger les VM de ce module. Ne choisissez pas `ds-nfs01` : trop petit pour la VM, ses fichiers de swap et les clones.
+
 ```powershell
-$ds = Get-Datastore -Name "ds-nfs-cli"
-$vmPortGroup = Get-VDPortgroup -Name "PG-Serveurs-CLI"
+$ds = Get-Datastore -Name "ds-iscsi01"
+$vmPortGroup = Get-VDPortgroup -Name "PG-Serveurs-CLI" -ErrorAction SilentlyContinue
+if (-not $vmPortGroup) { $vmPortGroup = Get-VirtualPortGroup -VMHost $h1 -Name "VM Network" }
 ```
 
-Explication : sélectionne le datastore partagé et le port group distribué.
+Explication : sélectionne le datastore partagé et le port group. Le port group distribué `PG-Serveurs-CLI` n'existe qu'après le module 2.3 : s'il est absent (module 1 fait en premier), la deuxième ligne se rabat sur le port group standard `VM Network`, présent par défaut sur les hôtes. Dans les deux cas `$vmPortGroup.Name` fonctionne pour `-NetworkName`. La VM sera basculée sur le port group distribué plus tard (2.4). Si vous avez déjà fait le module 3, vous pouvez utiliser `ds-nfs-cli` ou `ds-iscsi-cli` à la place, à condition de vérifier l'espace libre avec la commande précédente.
 
 ```powershell
 New-VM -Name "VM-vCenter-CLI" -VMHost $h1 -Datastore $ds -NumCpu 2 -MemoryGB 2 -DiskGB 20 -DiskStorageFormat Thin -NetworkName $vmPortGroup.Name -GuestId 'ubuntu64Guest'
@@ -725,7 +780,7 @@ Explication : équivalent de l'onglet Summary de la VM : état, dimensionnement,
 **Objectif** : ajouter une seconde carte réseau et modifier le matériel.
 
 ```powershell
-New-NetworkAdapter -VM "VM-vCenter-CLI" -NetworkName "PG-Serveurs-CLI" -Type Vmxnet3 -StartConnected
+New-NetworkAdapter -VM "VM-vCenter-CLI" -NetworkName $vmPortGroup.Name -Type Vmxnet3 -StartConnected
 ```
 
 Explication : ajoute une seconde carte réseau de type VMXNET3 (carte paravirtualisée performante, nécessite VMware Tools), connectée au démarrage. Le cours la connecte ensuite à un autre réseau et la configure dans le système invité.
@@ -764,10 +819,30 @@ Explication : cherche l'ISO Photon OS dans la Content Library. Vérifiez qu'un �
 ```powershell
 $cd = Get-CDDrive -VM "VM-vCenter-CLI"
 if (-not $cd) { $cd = New-CDDrive -VM "VM-vCenter-CLI" }
-Set-CDDrive -CD $cd -ContentLibraryIso $isoItem -StartConnected $true -Confirm:$false
 ```
 
-Explication : récupère ou crée le lecteur CD puis y connecte l'ISO de la Content Library, connecté au démarrage. Si votre version de PowerCLI ne propose pas `-ContentLibraryIso`, utilisez un ISO de datastore avec `-IsoPath "[ds-nfs-cli] iso/photon.iso"`. Cette approche remplace la lecture de `ExtensionData.FilePath`, peu fiable.
+Explication : récupère le lecteur CD de la VM, ou le crée s'il n'existe pas.
+
+Le paramètre `Set-CDDrive -ContentLibraryIso` n'existe que dans les versions récentes de PowerCLI. Si vous obtenez `A parameter cannot be found that matches parameter name 'ContentLibraryIso'`, on contourne : une Content Library est stockée sous forme de fichiers sur un datastore, on retrouve donc le fichier ISO sur le datastore et on le monte avec `-IsoPath`.
+
+```powershell
+$isoFile = $null
+foreach ($d in (Get-Datastore)) {
+    New-PSDrive -Name "dsb" -PSProvider VimDatastore -Root "\" -Location $d | Out-Null
+    $isoFile = Get-ChildItem -Path "dsb:\" -Recurse -Include "*photon*.iso" -ErrorAction SilentlyContinue | Select-Object -First 1
+    Remove-PSDrive -Name "dsb" -Force
+    if ($isoFile) { break }
+}
+$isoFile | Select-Object Name, DatastoreFullPath
+```
+
+Explication : parcourt chaque datastore comme un lecteur de fichiers (`dsb:`) et s'arrête au premier ISO dont le nom contient `photon`. `DatastoreFullPath` est le chemin au format `[datastore] dossier/fichier.iso`. Le parcours peut prendre quelques dizaines de secondes. Vérifiez qu'un fichier est retourné avant de continuer.
+
+```powershell
+Set-CDDrive -CD $cd -IsoPath $isoFile.DatastoreFullPath -StartConnected $true -Confirm:$false
+```
+
+Explication : monte l'ISO sur le lecteur CD, connecté au démarrage (la VM est éteinte, donc seul `-StartConnected` s'applique). Si votre version de PowerCLI accepte `-ContentLibraryIso`, vous pouvez à la place utiliser `Set-CDDrive -CD $cd -ContentLibraryIso $isoItem -StartConnected $true -Confirm:$false`. Dans le vSphere Client, le même résultat s'obtient par Edit Settings, CD/DVD drive, **Content Library ISO File**.
 
 ```powershell
 Get-CDDrive -VM "VM-vCenter-CLI" | Select-Object IsoPath, ConnectionState, StartConnected
@@ -806,13 +881,25 @@ Déroulement de l'installation de Photon OS (console) :
 | Password / Confirm | Définir et confirmer le mot de passe root |
 | Confirm installation | Valider, l'installation se termine, redémarrer |
 
-Après l'installation, déconnectez le CD pour éviter de redémarrer sur l'ISO :
+Après l'installation, déconnectez le CD pour éviter de redémarrer sur l'ISO. Le lecteur CD de la VM est sur un contrôleur **IDE** (`ide0:0`), dont les paramètres ne peuvent pas être modifiés VM allumée : il faut d'abord **éteindre la VM**.
+
+```powershell
+Stop-VM -VM "VM-vCenter-CLI" -Confirm:$false
+```
+
+Explication : éteint la VM (arrêt brutal, sans risque ici car l'installation est terminée). Si VMware Tools est installé, `Shutdown-VMGuest -VM "VM-vCenter-CLI" -Confirm:$false` fait un arrêt propre.
 
 ```powershell
 Get-CDDrive -VM "VM-vCenter-CLI" | Set-CDDrive -NoMedia -Confirm:$false
 ```
 
-Explication : retire le média du lecteur (équivalent de Disconnect CD/DVD dans Edit Settings).
+Explication : retire le média du lecteur (équivalent de Disconnect CD/DVD dans Edit Settings). Le lecteur est éteint avec la VM, donc la modification est acceptée.
+
+```powershell
+Start-VM -VM "VM-vCenter-CLI"
+```
+
+Explication : redémarre la VM, qui démarre maintenant sur son disque et plus sur l'ISO.
 
 ```powershell
 Get-VM "VM-vCenter-CLI" | Select-Object Name, @{N='Tools';E={$_.ExtensionData.Guest.ToolsStatus}}, @{N='OS';E={$_.ExtensionData.Guest.GuestFullName}}
@@ -938,6 +1025,21 @@ Get-DrsRecommendation -Cluster $cluster
 ```
 
 Explication : liste les recommandations DRS en attente (utile en mode manuel ou partiellement automatisé). Appliquez-en une avec `Apply-DrsRecommendation`.
+
+Une règle DRS n'accepte que des VM **situées dans le cluster**. Vérifiez d'abord où elles se trouvent :
+
+```powershell
+Get-VM "VM-Deploy-01", "VM-Clone-01" | Select-Object Name, VMHost, @{N='Cluster';E={(Get-Cluster -VM $_).Name}}
+Get-VMHost | Select-Object Name, @{N='Cluster';E={$_.Parent.Name}}
+```
+
+Explication : affiche le cluster et l'hôte de chaque VM, puis le cluster de chaque hôte. La colonne `Cluster` des deux VM doit afficher `Cluster-CLI`. Sinon, c'est que leur hôte est resté dans `RegionA01-COMP01` (1.3.1 non terminée pour cet hôte), ou que `$cluster` désigne un autre cluster du même nom (`(Get-Cluster -Name "Cluster-CLI").Count` doit valoir 1).
+
+```powershell
+Get-VM "VM-Deploy-01", "VM-Clone-01" | Where-Object { (Get-Cluster -VM $_).Name -ne "Cluster-CLI" } | Move-VM -Destination $h1 -Confirm:$false
+```
+
+Explication : si une VM est hors du cluster, la déplace sur `esx-01a`, à condition que cet hôte soit déjà dans `Cluster-CLI` (vérifié par la commande précédente). Sinon, terminez d'abord 1.3.1 : le second hôte (`esx-02a`) doit aussi être déplacé dans `Cluster-CLI`, après avoir migré ses VM vers `esx-01a`.
 
 ```powershell
 New-DrsRule -Cluster $cluster -Name "Separer-VM" -KeepTogether $false -VM (Get-VM "VM-Deploy-01"), (Get-VM "VM-Clone-01") -Enabled $true
@@ -1133,10 +1235,16 @@ Explication : réactive DRS après l'exercice.
 Procédure du manuel (vSphere Client) : sélectionner l'hôte `esx-02a`, onglet Monitor, Performance Overview, plage Real-time. L'affichage Hôte puis Virtual Machines donne l'usage CPU par VM (une couleur par VM). Défiler pour voir mémoire, réseau (Mbps) et disque (Ko/s). Pour générer de l'activité, redémarrer toutes les VM de l'hôte, puis utiliser **Performance, Advanced**, **Chart Options**, type **Stacked Graph per VM**, sélection des objets, légende cliquable pour surligner un objet, bouton Export (image ou CSV) et, dans Chart metrics, ajouter pour la mémoire les compteurs **Active**, **Ballooned memory** et **Compressed**.
 
 ```powershell
-Get-VMHost $h2 | Get-VM | Restart-VMGuest -Confirm:$false
+Get-VMHost $h2 | Get-VM | Where-Object { $_.Name -notlike "vCLS*" -and $_.PowerState -eq "PoweredOn" } | ForEach-Object {
+    if ($_.ExtensionData.Guest.ToolsRunningStatus -eq "guestToolsRunning") {
+        Restart-VMGuest -VM $_ -Confirm:$false
+    } else {
+        Restart-VM -VM $_ -Confirm:$false
+    }
+}
 ```
 
-Explication : redémarre le système invité de toutes les VM de l'hôte pour produire de la charge. Nécessite VMware Tools. Les VM sans Tools doivent être redémarrées autrement (le manuel signale que certaines s'éteignent au lieu de redémarrer, il faut alors les rallumer à la main).
+Explication : redémarre toutes les VM allumées de l'hôte pour produire de la charge, en évitant les deux erreurs courantes. Le filtre `-notlike "vCLS*"` exclut les VM de service `vCLS`, gérées par vCenter : l'utilisateur n'a pas le droit de les redémarrer (`VirtualMachine.Interact.Reset` refusé). Ensuite, `ToolsRunningStatus` indique si VMware Tools tourne dans la VM. Si oui, `Restart-VMGuest` fait un redémarrage propre du système invité. Sinon, `Restart-VM` fait un redémarrage forcé (équivalent d'un reset), acceptable dans le lab pour générer de l'activité mais à éviter en production. Une VM qui s'éteint au lieu de redémarrer doit être rallumée à la main (`Start-VM`).
 
 ```powershell
 Get-Stat -Entity $h2 -Stat cpu.usage.average -Realtime -MaxSamples 10 | Select-Object Timestamp, Value, Unit
@@ -1391,7 +1499,7 @@ Modifier un rôle change les privilèges de tous les utilisateurs et groupes qui
 Variables de session à rejouer si vous démarrez ici :
 
 ```powershell
-$dc = Get-Datacenter -Name "Datacenter-CLI" -ErrorAction SilentlyContinue
+$dc = Get-Datacenter -Name "RegionA01"
 $h1 = Get-VMHost -Name 'esx-01a.vcf.sddc.lab'
 $h2 = Get-VMHost -Name 'esx-02a.vcf.sddc.lab'
 ```
@@ -1549,12 +1657,15 @@ La vue **Topology** (Configure, Topology) du vSphere Client montre à gauche les
 
 **Définition** : l'édition des propriétés (Edit Settings) permet de modifier le nom, d'activer **Network I/O Control**, la description, le MTU, le filtrage multicast, le protocole de découverte, le contact administrateur et le nombre d'uplinks (avec renommage possible).
 
+**Prérequis** : les trois blocs de cette sous-section (LLDP, Network I/O Control, Health Check) s'appliquent au VDS `VDS-CLI`, qui n'est créé qu'en **2.3.1**. Si vous suivez le README dans l'ordre, exécutez-les **après la création du VDS** (ou revenez-y une fois la 2.3.1 faite). Pour les tester avant, remplacez `VDS-CLI` par le nom d'un VDS existant (`Get-VDSwitch | Select-Object Name`).
+
 ```powershell
 $vds = Get-VDSwitch -Name "VDS-CLI" -ErrorAction SilentlyContinue
+if (-not $vds) { throw "VDS-CLI n'existe pas encore : créez-le d'abord (2.3.1), ou changez le nom ci-dessus." }
 Set-VDSwitch -VDSwitch $vds -LinkDiscoveryProtocol LLDP -LinkDiscoveryProtocolOperation Both -ContactName "admin@sddc.lab" -Confirm:$false
 ```
 
-Explication : active LLDP en écoute et annonce et renseigne le contact (le VDS `VDS-CLI` est créé en 2.3). Utile pour que le switch physique voisin identifie l'hôte.
+Explication : récupère le VDS, s'arrête avec un message clair s'il est introuvable (sans ce test, `-ErrorAction SilentlyContinue` masque l'échec et `Set-VDSwitch` plante avec `The argument is null or empty`), puis active LLDP en écoute et annonce et renseigne le contact. Utile pour que le switch physique voisin identifie l'hôte. Saisissez l'adresse de contact sans espace (`admin@sddc.lab`).
 
 ```powershell
 $vds.ExtensionData.EnableNetworkResourceManagement($true)
@@ -1586,7 +1697,7 @@ Explication : active le Health Check pour VLAN et MTU et pour teaming et failove
 $vds = New-VDSwitch -Name "VDS-CLI" -Location $dc -NumUplinkPorts 4 -Version "8.0.0"
 ```
 
-Explication : crée un Distributed Switch dans `Datacenter-CLI` avec quatre ports d'uplink logiques, version 8.0.0. Adaptez la version à votre vCenter (`Get-VDSwitch` l'affiche).
+Explication : crée un Distributed Switch dans le datacenter `RegionA01` avec quatre ports d'uplink logiques, version 8.0.0. Adaptez la version à votre vCenter (`Get-VDSwitch` l'affiche).
 
 ### 2.3.2 Ajouter les hôtes
 
@@ -1597,6 +1708,8 @@ Add-VDSwitchVMHost -VDSwitch $vds -VMHost $h1, $h2
 Explication : associe les deux hôtes au VDS. La configuration leur est propagée. À ce stade, aucune carte physique n'est encore utilisée.
 
 ### 2.3.3 Affecter les cartes physiques aux uplinks
+
+**Attention (lab VCF, à vérifier)** : les hôtes sont déjà reliés au VDS d'origine du lab, qui utilise probablement toutes leurs cartes physiques. Lancez la commande ci-dessous et ne raccordez que des cartes réellement libres. S'il n'y en a pas, passez cette étape : `VDS-CLI` fonctionnera pour des VM d'un même hôte, mais sans lien vers le réseau physique.
 
 ```powershell
 Get-VMHostNetworkAdapter -VMHost $h1, $h2 -Physical | Select-Object VMHost, Name, BitRatePerSec
@@ -1650,12 +1763,40 @@ Explication : définit un VLAN privé : un VLAN primaire en mode promiscuité et
 
 ### 2.3.6 Créer les VMkernel vMotion
 
+**Attention (lab VCF, à vérifier)** : le vMotion de `TinyLinux2` entre les deux hôtes a fonctionné sans configuration, ce qui indique que le VDS d'origine porte déjà des VMkernel vMotion. Vérifiez avec `Get-VMHostNetworkAdapter -VMHost $h1, $h2 -VMKernel | Select VMHost, Name, IP, VMotionEnabled`. Si `VMotionEnabled` vaut `True`, la création ci-dessous est facultative : un VMkernel sur `VDS-CLI` sans carte physique en uplink (2.3.3) ne pourrait de toute façon pas transporter de trafic entre hôtes.
+
+Dans ce lab, les hôtes ont déjà une **pile TCP/IP vMotion dédiée** (netstack `vmotion`), utilisée par le VDS d'origine. Quand cette pile existe, un VMkernel de vMotion doit être créé **directement sur cette pile** : ni `-VMotionEnabled` ni l'ajout du tag `VMotion` ne fonctionnent sur la pile par défaut (erreurs `The VirtualNic capability 'vmotion' is not supported` puis `Failed to add VMotion tag when dedicated stack is instantiated`).
+
+Si vous avez déjà créé un VMkernel sans cette pile (cas de `vmk3`), supprimez-le d'abord :
+
 ```powershell
-New-VMHostNetworkAdapter -VMHost $h1 -VirtualSwitch $vds -PortGroup "PG-vMotion-CLI" -IP 10.0.50.11 -SubnetMask 255.255.255.0 -VMotionEnabled $true
-New-VMHostNetworkAdapter -VMHost $h2 -VirtualSwitch $vds -PortGroup "PG-vMotion-CLI" -IP 10.0.50.12 -SubnetMask 255.255.255.0 -VMotionEnabled $true
+foreach ($h in $h1, $h2) {
+    Get-VMHostNetworkAdapter -VMHost $h -VMKernel | Where-Object { $_.PortGroupName -eq "PG-vMotion-CLI" } | Remove-VMHostNetworkAdapter -Confirm:$false
+}
 ```
 
-Explication : crée sur chaque hôte une interface VMkernel dédiée au vMotion (`-VMotionEnabled $true`). Les IP sont des exemples à adapter, dans un même sous-réseau, joignables entre elles. Le manuel ne s'en sert pas sur ce VDS (« we will not be using this distributed switch for any VMkernel functions »), mais le vMotion en a besoin.
+Explication : retrouve sur chaque hôte le VMkernel rattaché à `PG-vMotion-CLI` et le supprime pour repartir proprement. Sans effet si aucun n'existe.
+
+Puis créez-le sur la pile `vmotion` :
+
+```powershell
+$stack1 = Get-VMHostNetworkStack -VMHost $h1 -Name "vmotion"
+$stack2 = Get-VMHostNetworkStack -VMHost $h2 -Name "vmotion"
+New-VMHostNetworkAdapter -VMHost $h1 -VirtualSwitch $vds -PortGroup "PG-vMotion-CLI" -IP 10.0.50.11 -SubnetMask 255.255.255.0 -NetworkStack $stack1
+New-VMHostNetworkAdapter -VMHost $h2 -VirtualSwitch $vds -PortGroup "PG-vMotion-CLI" -IP 10.0.50.12 -SubnetMask 255.255.255.0 -NetworkStack $stack2
+```
+
+Explication : récupère la pile TCP/IP `vmotion` de chaque hôte, puis crée un VMkernel dessus. Une interface placée sur cette pile transporte le trafic vMotion sans autre réglage (pas de `-VMotionEnabled`). Les IP sont des exemples : dans un même sous-réseau, joignables entre elles, et **différentes de celles déjà utilisées** par les VMkernel vMotion existants du lab. Le manuel ne se sert pas de ce VDS (« we will not be using this distributed switch for any VMkernel functions »), mais le vMotion en a besoin. Si `-NetworkStack` est refusé par votre version de PowerCLI, créez le VMkernel dans le vSphere Client (hôte, Configure, VMkernel adapters, Add Networking, VMkernel Network Adapter, port group `PG-vMotion-CLI`, **TCP/IP stack : vMotion**).
+
+Vérification de la pile utilisée :
+
+```powershell
+foreach ($h in $h1, $h2) {
+    (Get-EsxCli -VMHost $h -V2).network.ip.interface.list.Invoke() | Select-Object Name, NetstackInstance, PortgroupName
+}
+```
+
+Explication : liste les VMkernel de l'hôte avec la pile TCP/IP à laquelle ils appartiennent. Le nouveau VMkernel doit apparaître avec `NetstackInstance = vmotion`.
 
 ### 2.3.7 Vérifier
 
@@ -1721,14 +1862,23 @@ Explication : récupère le gestionnaire d'accès de l'hôte et affiche le mode 
 $am.ChangeLockdownMode("lockdownNormal")
 ```
 
-Explication : active le mode **Normal**. Un SSH direct vers `esx-01a` échoue, vCenter continue à gérer l'hôte. Activer depuis vCenter préserve les permissions locales.
+Explication : active le mode **Normal**. Un SSH direct vers `esx-01a` échoue, vCenter continue à gérer l'hôte. Activer depuis vCenter préserve les permissions locales. La commande n'affiche rien quand elle réussit.
 
 ```powershell
-$am.UpdateLockdownExceptions(@("svc-sauvegarde"))
+$am.UpdateViewData()
+$am.LockdownMode
+```
+
+Explication : l'objet `$am` est une copie prise avant le changement, donc `$am.LockdownMode` afficherait encore `lockdownDisabled`. `UpdateViewData()` le rafraîchit : on doit lire `lockdownNormal`.
+
+**Prérequis** : un Exception User doit **déjà exister** comme compte local de l'hôte (ou utilisateur Active Directory). Un nom inventé provoque `The user or group named '...' does not exist`. Dans le lab, il n'y a pas de compte `svc-sauvegarde` : utilisez un compte existant comme `root`. Pour créer un vrai compte de service, faites-le **avant** d'activer le Lockdown, dans l'Host Client (Manage, Security & users, Users) ou par connexion directe à l'hôte (`Connect-VIServer esx-01a... -User root`, puis `New-VMHostAccount -Id svc-sauvegarde -Password <mot de passe> -UserAccount`). Une fois le Lockdown actif, la connexion directe à l'hôte n'est plus possible.
+
+```powershell
+$am.UpdateLockdownExceptions(@("root"))
 $am.QueryLockdownExceptions()
 ```
 
-Explication : définit les **Exception Users**, comptes autorisés malgré le Lockdown (par exemple pour une application de sauvegarde tierce), puis les affiche. Cette liste ne doit pas servir à donner un accès à des utilisateurs.
+Explication : définit les **Exception Users**, comptes autorisés malgré le Lockdown (par exemple pour une application de sauvegarde tierce), puis les affiche : `root` doit apparaître. Ici `root` sert d'exemple de compte existant. En production, on y met un compte de service dédié, jamais `root`. Cette liste ne doit pas servir à donner un accès à des utilisateurs. Pour la vider ensuite : `$am.UpdateLockdownExceptions(@())`.
 
 ```powershell
 Get-AdvancedSetting -Entity $h1 -Name "DCUI.Access"
@@ -1776,10 +1926,11 @@ Get-VMHostFirewallException -VMHost $h1 | Where-Object { $_.Enabled } | Select-O
 Explication : liste les règles actives avec leurs ports et protocoles.
 
 ```powershell
+Get-VMHostService -VMHost $h1 | Where-Object { $_.Key -eq "TSM-SSH" } | Select-Object Key, Running, Policy
 Get-VMHostFirewallException -VMHost $h1 -Name "SSH Server" | Set-VMHostFirewallException -Enabled $false
 ```
 
-Explication : désactive la règle de pare-feu du serveur SSH.
+Explication : la première ligne vérifie que le service SSH est bien arrêté (`Running = False`). C'est un prérequis : tant que le service `TSM-SSH` tourne, ESXi considère la règle de pare-feu du serveur SSH comme requise et refuse de la désactiver (`Cannot change the host configuration. Required ruleset cannot be disabled`). Si `Running` vaut `True`, relancez d'abord la commande d'arrêt du service ci-dessus. La seconde ligne désactive alors la règle de pare-feu du serveur SSH. Si l'erreur persiste malgré le service arrêté, ce n'est pas bloquant : un service SSH arrêté avec une politique `Off` suffit à fermer l'accès, la règle de pare-feu n'est qu'une couche supplémentaire.
 
 ```powershell
 Get-VMHostFirewallDefaultPolicy -VMHost $h1
@@ -1826,11 +1977,20 @@ Get-VIPrivilege -Role $role | Select-Object Id | Select-Object -First 10
 
 Explication : affiche les privilèges contenus dans le rôle.
 
+**Prérequis** : l'utilisateur `prestataire-reseau` doit exister **avant** de lui attribuer une permission. Il est créé en 2.8.2, **dans le vSphere Client** (Administration, Single Sign On, Users and Groups, Add). Si vous suivez le document dans l'ordre, faites d'abord 2.8.2 puis revenez ici. Sans cela, `New-VIPermission` échoue avec `Could not find VIAccount with name ...` (voir Annexe B).
+
+```powershell
+$dc = Get-Datacenter -Name "RegionA01"
+Get-VIAccount -User | Where-Object { $_.Name -like "*prestataire*" }
+```
+
+Explication : définit `$dc` (le datacenter du lab) et vérifie que vCenter voit bien le compte. On filtre avec `Where-Object` plutôt que d'utiliser `-Name` et `-Domain` ensemble, car cette combinaison provoque `Parameter set cannot be resolved` (voir Annexe B). Si la seconde commande ne renvoie rien, le compte n'existe pas encore (ou pas sous ce nom) : créez-le en 2.8.2. Cette vérification est facultative : `New-VIPermission` échoue de toute façon proprement si le compte est introuvable.
+
 ```powershell
 New-VIPermission -Entity $dc -Principal "VSPHERE.LOCAL\prestataire-reseau" -Role $role -Propagate:$true
 ```
 
-Explication : attribue le rôle sur `Datacenter-CLI` et ses enfants (`-Propagate`). L'utilisateur est créé en 2.8. Il peut gérer le réseau et rien d'autre.
+Explication : attribue le rôle sur le datacenter `RegionA01` et ses enfants (`-Propagate`). Attention à la syntaxe : `-Entity` et `-Principal` prennent un tiret, le nom du domaine est écrit sans espace (`VSPHERE.LOCAL\prestataire-reseau`) et le `$` de `$true` se colle aux deux-points (`-Propagate:$true`). Il peut gérer le réseau et rien d'autre.
 
 ```powershell
 Get-VIPermission -Entity $dc | Select-Object Principal, Role, Propagate, IsGroup
@@ -1847,6 +2007,17 @@ Explication : supprime la permission (nettoyage ou changement d'équipe).
 ---
 
 ## 2.8 Single Sign-On
+
+**Méthode retenue dans le lab : l'interface graphique.** Le module PowerShell `VMware.vSphere.SsoAdmin` n'est pas disponible dans le lab HOL (pas d'accès à la PowerShell Gallery). La création des utilisateurs et des groupes SSO se fait donc dans le **vSphere Client** (Menu, Administration, Single Sign On, Users and Groups), comme dans le manuel. Les commandes PowerShell ci-dessous sont données en **variante**, pour un environnement où le module est installé.
+
+**Prérequis pour la variante PowerShell : le module SSO.** Les cmdlets `*-Sso*` ne sont pas dans PowerCLI de base : elles viennent du module séparé `VMware.vSphere.SsoAdmin`. Vérifiez d'abord s'il est présent, puis importez-le :
+
+```powershell
+Get-Module -ListAvailable VMware.vSphere.SsoAdmin
+Import-Module VMware.vSphere.SsoAdmin
+```
+
+Explication : la première commande liste le module s'il est installé (aucun résultat = absent). La seconde le charge dans la session. Si le module est absent, essayez `Install-Module VMware.vSphere.SsoAdmin -Scope CurrentUser`. Cela demande un accès à la PowerShell Gallery, **souvent bloqué dans le lab HOL** (pas d'accès Internet). Dans ce cas, créez l'utilisateur et le groupe avec le vSphere Client (Menu, Administration, Single Sign On, Users and Groups, onglet Users, Add), comme dans le manuel, puis reprenez les commandes PowerCLI qui ne dépendent pas du module (2.7).
 
 Variables de session : ouvrez d'abord la session d'administration SSO.
 
@@ -1870,6 +2041,26 @@ Explication : liste les sources d'identité configurées (au minimum `vsphere.lo
 
 **Définition** : les utilisateurs de l'onglet Users sont internes à SSO, dans le domaine `vsphere.local`, et diffèrent des comptes du système d'exploitation.
 
+**Méthode dans le lab : vSphere Client (interface graphique)**
+
+1. Connectez-vous au vSphere Client en `administrator@vsphere.local`.
+2. Menu, **Administration**, **Single Sign On**, **Users and Groups**.
+3. Choisissez le domaine `vsphere.local`, onglet **Users**, puis **Add**.
+4. Renseignez : Username `prestataire-reseau`, Password `VMware123!VMware123!` (à confirmer), First Name `Prestataire`, Last Name `Reseau`, Email `prestataire@vsphere.local`, Description `Prestataire reseau (lab)`.
+5. Cliquez sur **Add** pour valider. L'utilisateur apparaît dans la liste.
+
+Explication : le mot de passe doit respecter la politique de complexité. Le nom d'utilisateur ne pourra plus être modifié après création. Le manuel crée un utilisateur `holadmin` de la même façon.
+
+**Vérification dans PowerCLI** (fonctionne sans le module SSO, avec une session `Connect-VIServer` ouverte) :
+
+```powershell
+Get-VIAccount -User | Where-Object { $_.Name -like "*prestataire*" }
+```
+
+Explication : si le compte est renvoyé, vCenter le voit et vous pouvez attribuer le rôle avec `New-VIPermission` (section 2.7). Si rien n'est renvoyé, vérifiez l'orthographe du nom et le domaine.
+
+**Variante PowerShell** (uniquement si le module `VMware.vSphere.SsoAdmin` est disponible) :
+
 ```powershell
 New-SsoPersonUser -UserName "prestataire-reseau" -Password "VMware123!VMware123!" -FirstName "Prestataire" -LastName "Reseau" -EmailAddress "prestataire@vsphere.local" -Description "Prestataire reseau (lab)"
 ```
@@ -1886,47 +2077,103 @@ Explication : liste les utilisateurs du domaine, avec leur état désactivé ou 
 
 **Définition** : un groupe contient des principals (utilisateurs ou groupes). Les membres héritent des permissions du groupe.
 
+**Méthode dans le lab : vSphere Client (interface graphique).** Les cmdlets de groupe SSO (`New-SsoGroup`, `Add-UserToSsoGroup`...) viennent du module `VMware.vSphere.SsoAdmin`, absent du lab : tout se fait donc dans l'interface.
+
+**Créer le groupe**
+
+1. Menu, **Administration**, **Single Sign On**, **Users and Groups**.
+2. Domaine `vsphere.local`, onglet **Groups**, puis **Add Group**.
+3. Renseignez : Group Name `Groupe-Reseau`, Description `Equipe reseau`.
+4. Cliquez sur **Add** pour valider. Le groupe apparaît dans la liste.
+
+**Y ajouter un membre**
+
+1. Dans l'onglet Groups, cliquez sur `Groupe-Reseau`.
+2. Dans la zone **Group Members**, cliquez sur **Add Members**.
+3. Domaine `vsphere.local`, recherchez `prestataire-reseau`, sélectionnez-le.
+4. Cliquez sur **Save**. L'utilisateur est maintenant membre du groupe et hérite de ses permissions.
+
+Explication : équivalent de saisir `holadmin` dans le champ membre du manuel.
+
+**Ajouter un groupe dans le groupe Administrators (exemple du manuel)**
+
+**Définition** : le groupe SSO **Administrators** donne les droits d'administration sur SSO (gérer les utilisateurs, groupes, politiques). Tout groupe placé dedans, et donc tous ses membres, devient administrateur SSO. Le manuel y ajoute le groupe `HOL Group`.
+
+**Prérequis** : le groupe à ajouter doit déjà exister (le manuel crée `HOL Group` comme `Groupe-Reseau` ci-dessus, avec l'utilisateur `holadmin` comme membre).
+
+1. Connectez-vous au vSphere Client en `administrator@vsphere.local` (ou avec un compte déjà membre d'Administrators).
+2. Menu, **Administration**, **Single Sign On**, **Users and Groups**.
+3. Domaine `vsphere.local`, onglet **Groups**.
+4. Cliquez sur le groupe **Administrators** pour l'ouvrir.
+5. Dans la zone **Group Members**, cliquez sur **Add Members**.
+6. Dans la fenêtre qui s'ouvre, choisissez le domaine `vsphere.local`.
+7. Saisissez le nom du groupe dans la zone de recherche (par exemple `HOL Group`), puis sélectionnez-le dans la liste.
+8. Cliquez sur **Save**. Le groupe apparaît dans les membres d'Administrators.
+
+Explication : le groupe imbriqué hérite des droits d'administration SSO, et ses membres aussi. Ne le faites pas pour `Groupe-Reseau` : il est prévu pour un prestataire qui ne doit gérer que le réseau (moindre privilège, voir 2.7).
+
+**Retirer un groupe d'Administrators (nettoyage)** : ouvrez Administrators, cochez le groupe dans Group Members, **Remove Member**, confirmez.
+
+**Variante PowerShell** : l'imbrication de groupes passe par `Add-GroupToSsoGroup`, du module `VMware.vSphere.SsoAdmin` (absent du lab). Dans le lab, utilisez l'interface.
+
+**Donner le rôle réseau au groupe plutôt qu'à l'utilisateur (facultatif)** : cette commande est du PowerCLI standard, elle ne demande pas le module SSO. Elle suppose que `$dc` et `$role` sont définis (voir 2.7).
+
+```powershell
+New-VIPermission -Entity $dc -Principal "VSPHERE.LOCAL\Groupe-Reseau" -Role $role -Propagate:$true
+Get-VIPermission -Entity $dc | Select-Object Principal, Role, Propagate, IsGroup
+```
+
+Explication : attribue le rôle au groupe, donc à tous ses membres, puis vérifie. `IsGroup` vaut `True` pour cette ligne. Cette commande n'a pas été testée dans le lab.
+
+**Variante PowerShell** (uniquement si le module `VMware.vSphere.SsoAdmin` est installé) :
+
 ```powershell
 $grp = New-SsoGroup -GroupName "Groupe-Reseau" -Description "Equipe reseau"
 $usr = Get-SsoPersonUser -Name "prestataire-reseau" -Domain "vsphere.local"
 Add-UserToSsoGroup -TargetGroup $grp -User $usr
 ```
 
-Explication : crée le groupe puis y ajoute l'utilisateur (équivalent de saisir `holadmin` dans le champ membre). Selon la version du module, la syntaxe de `Add-UserToSsoGroup` peut différer : vérifiez avec `Get-Help Add-UserToSsoGroup -Full`.
-
-```powershell
-Get-SsoGroup -Name "Administrators" -Domain "vsphere.local"
-Get-Help Add-GroupToSsoGroup -Full
-```
-
-Explication : le manuel ajoute le groupe `HOL Group` au groupe **Administrators** (Add Members, domaine `vsphere.local`, recherche du groupe, Save), ce qui lui donne les droits d'administration SSO. La commande d'imbrication de groupes dépend de la version du module : consultez l'aide. L'imbrication est aussi possible dans le vSphere Client.
+Explication : crée le groupe puis y ajoute l'utilisateur. Selon la version du module, la syntaxe de `Add-UserToSsoGroup` peut différer : vérifiez avec `Get-Help Add-UserToSsoGroup -Full`.
 
 ### 2.8.4 Verrouillage, déverrouillage et mots de passe
+
+**Méthode dans le lab : vSphere Client (interface graphique).** Les cmdlets `Get-SsoLockoutPolicy`, `Get-SsoPasswordPolicy`, `Unlock-SsoPersonUser`, `Set-SsoPersonUser` et `Disconnect-SsoAdminServer` viennent du module `VMware.vSphere.SsoAdmin`, absent du lab (erreur `not recognized as a name of a cmdlet`, voir Annexe B). Tout se fait dans l'interface.
+
+**Voir les politiques de verrouillage et de mots de passe**
+
+1. Menu, **Administration**, **Single Sign On**, **Configuration**.
+2. Onglet **Local Accounts**, puis les sous-onglets **Password Policy** et **Lockout Policy**.
+3. Cliquez sur **Edit** pour modifier une valeur (le libellé exact des onglets peut varier légèrement selon la version).
+
+Explication : la politique de verrouillage verrouille par défaut un compte après trois échecs de connexion (elle est désactivée dans le lab). La politique de mots de passe prévoit une expiration par défaut de 90 jours.
+
+**Déverrouiller un compte bloqué**
+
+1. Menu, Administration, Single Sign On, **Users and Groups**, onglet **Users**, domaine `vsphere.local`.
+2. Repérez le compte dont la colonne **Locked** affiche `Yes`.
+3. Cliquez sur le menu des trois points à gauche de la ligne, puis **Unlock**.
+
+Explication : il faut être membre du groupe SSO **Administrators**.
+
+**Réinitialiser le mot de passe d'un utilisateur (par un administrateur)**
+
+1. Users and Groups, onglet Users, domaine `vsphere.local`.
+2. Menu des trois points du compte, puis **Edit**.
+3. Saisissez le nouveau mot de passe (par exemple `NouveauMdp!2026Lab`), confirmez, **Save**.
+
+Explication : un utilisateur change son propre mot de passe dans le vSphere Client : menu de son nom, Change Password, mot de passe actuel, nouveau, confirmation, OK. Pensez à changer le mot de passe de `administrator@vsphere.local` avant 90 jours, sinon il est bloqué au 91e jour. Si vous le changez dans le lab, notez-le pour les autres exercices.
+
+**Variante PowerShell** (uniquement si le module `VMware.vSphere.SsoAdmin` est installé et importé) :
 
 ```powershell
 Get-SsoLockoutPolicy
 Get-SsoPasswordPolicy
-```
-
-Explication : affiche la politique de verrouillage (par défaut, trois échecs de connexion verrouillent le compte, mais elle est désactivée dans le lab) et la politique de mots de passe (expiration par défaut de 90 jours).
-
-```powershell
 Get-SsoPersonUser -Name "prestataire-reseau" -Domain "vsphere.local" | Unlock-SsoPersonUser
-```
-
-Explication : déverrouille un compte bloqué. Dans l'interface : Users and Groups, colonne Locked (affiche Yes), menu des trois points, Unlock. Il faut être membre du groupe SSO Administrators.
-
-```powershell
 Get-SsoPersonUser -Name "prestataire-reseau" -Domain "vsphere.local" | Set-SsoPersonUser -NewPassword "NouveauMdp!2026Lab"
-```
-
-Explication : réinitialise le mot de passe d'un utilisateur par un administrateur. Un utilisateur change son propre mot de passe dans le vSphere Client : menu de son nom, Change Password, mot de passe actuel, nouveau, confirmation, OK. Pensez à changer le mot de passe de `administrator@vsphere.local` avant 90 jours, sinon il est bloqué au 91e jour. Si vous le changez dans le lab, notez-le pour les autres exercices.
-
-```powershell
 Disconnect-SsoAdminServer
 ```
 
-Explication : ferme la session d'administration SSO.
+Explication : dans l'ordre, affiche la politique de verrouillage, affiche la politique de mots de passe, déverrouille un compte, réinitialise un mot de passe, puis ferme la session d'administration SSO.
 
 ---
 
@@ -2089,7 +2336,7 @@ L'assistant Add Host demande : nom ou adresse, identifiants (root), résumé de 
 Variables de session à rejouer si vous démarrez ici :
 
 ```powershell
-$dc      = Get-Datacenter -Name "Datacenter-CLI" -ErrorAction SilentlyContinue
+$dc      = Get-Datacenter -Name "RegionA01"
 $cluster = Get-Cluster -Name "Cluster-CLI" -ErrorAction SilentlyContinue
 $h1 = Get-VMHost -Name 'esx-01a.vcf.sddc.lab'
 $h2 = Get-VMHost -Name 'esx-02a.vcf.sddc.lab'
@@ -2473,7 +2720,18 @@ Get-DatastoreCluster -Name "DatastoreCluster-CLI" | Remove-DatastoreCluster -Con
 Explication : supprime le datastore cluster (les datastores restent).
 
 ```powershell
-Get-VIPermission -Entity (Get-Datacenter "Datacenter-CLI") | Where-Object { $_.Principal -like "*prestataire*" } | Remove-VIPermission -Confirm:$false
+Get-Cluster -Name "Cluster-CLI" | Get-VMHost | ForEach-Object {
+  Set-VMHost -VMHost $_ -State Maintenance -Confirm:$false
+  Move-VMHost -VMHost $_ -Destination (Get-Cluster -Name "RegionA01-COMP01")
+  Set-VMHost -VMHost $_ -State Connected -Confirm:$false
+}
+Get-Cluster -Name "Cluster-CLI" | Remove-Cluster -Confirm:$false
+```
+
+Explication : remet les hôtes dans le cluster d'origine `RegionA01-COMP01`, puis supprime `Cluster-CLI`. Les VM doivent d'abord avoir été migrées ou éteintes, comme en 1.3.1 (sinon la mise en maintenance reste à 0 %). Le datacenter `RegionA01` est celui du lab : ne le supprimez pas.
+
+```powershell
+Get-VIPermission -Entity (Get-Datacenter "RegionA01") | Where-Object { $_.Principal -like "*prestataire*" } | Remove-VIPermission -Confirm:$false
 Get-VIRole -Name "Role-Reseau-CLI" | Remove-VIRole -Confirm:$false
 ```
 
@@ -2496,17 +2754,36 @@ Explication : ferme la session vCenter. Les hôtes déplacés vers `Cluster-CLI`
 | Erreur de certificat non approuvé | Certificat auto-signé du lab | `Set-PowerCLIConfiguration -InvalidCertificateAction Ignore -Scope Session` |
 | `network VLAN10-Serveurs doesn't exist` | Sélection d'un Uplink (port group physique) au lieu d'un port group de VM | Utiliser `Get-VDPortgroup` et choisir un nom sans « Uplink » |
 | `Move-VMHost` échoue | Hôte non placé en maintenance, ou VM encore en cours d'exécution | Migrer ou arrêter les VM, puis passer l'hôte en maintenance |
+| `Move-VMHost` : The operation is not supported on the object | Déplacement d'un hôte vers un cluster d'un **autre datacenter** (ici `Datacenter-CLI` alors que les hôtes sont dans `RegionA01`) | Créer le cluster dans le datacenter existant (voir 1.3.1) |
+| `Set-VMHost -State Maintenance` reste à `percent complete: 0` | L'hôte héberge encore des VM et DRS est désactivé : aucune évacuation automatique | Migrer les VM avec `Move-VM` (ou les éteindre), puis relancer. Les VM `vCLS` se gèrent seules (voir 1.3.1) |
 | vMotion refusé | Pas de stockage partagé, VMkernel vMotion absent ou injoignable, ou VM sur un datastore local | Placer la VM sur un datastore partagé, vérifier les VMkernel (2.3.6) |
 | La VM ne démarre pas, espace insuffisant | Disque Thick sur un datastore trop petit | Utiliser `-DiskStorageFormat Thin` (le manuel insiste sur Thin Provision) |
 | Perte de connexion à l'hôte après ajout au VDS | Carte de gestion déplacée sur le VDS | Ne migrer que des cartes libres, jamais celle de la gestion |
 | Impossible de se connecter à l'hôte en SSH | Lockdown Mode actif, ou service SSH arrêté | Désactiver le mode via vCenter, démarrer le service TSM-SSH |
 | Le datastore n'apparaît pas sur le deuxième hôte | Rescan non effectué | `Get-VMHostStorage -VMHost $h2 -RescanAllHba -RescanVmfs` |
 | Une VM s'éteint au lieu de redémarrer | VMware Tools absents (`Restart-VMGuest` indisponible) | Rallumer la VM manuellement, installer les Tools |
+| `Operation "Restart VM guest" failed for VM "VM-Deploy-01" ... VMware Tools is not running in this virtual machine` avec `Restart-VMGuest` (1.11) | `Restart-VMGuest` exige VMware Tools actif dans la VM. Ici la VM Windows 10 n'a pas les Tools en cours d'exécution | Tester `$_.ExtensionData.Guest.ToolsRunningStatus`, utiliser `Restart-VMGuest` si `guestToolsRunning`, sinon `Restart-VM` (redémarrage forcé), ou installer les Tools |
+| `Restart-VMGuest` ... `Permission to perform this operation was denied. Required privileges: 'VirtualMachine.Interact.Reset'` sur `vCLS-xxxxxxxx-...` (1.11) | Les VM `vCLS` sont des VM système gérées par vCenter : leur redémarrage est interdit à l'utilisateur, même administrateur | Les exclure du pipeline : `Where-Object { $_.Name -notlike "vCLS*" }` |
 | `The node didn't join any Active Directory` | Aucune source AD dans le lab | Normal dans le lab, ignorer |
 | Compte SSO bloqué | Trop d'échecs de connexion ou mot de passe expiré (90 jours) | Déverrouiller via un administrateur SSO, changer le mot de passe |
 | « Unknown » sous Technology dans l'Host Client | Environnement imbriqué | Comportement attendu, ignorer |
 | Bouton OK invisible dans un assistant | Fenêtre trop petite | Dézoomer le navigateur |
 | Cmdlet SSO inconnue | Module `VMware.vSphere.SsoAdmin` absent ou autre version | `Get-Command *Sso*` et `Get-Help <cmdlet> -Full` |
+| `Get-VIAccount : Parameter set cannot be resolved using the specified named parameters` (2.7, 2.8.2) | `-Name` et `-Domain` ne forment pas une combinaison valide pour cette cmdlet dans cette version de PowerCLI | Lister puis filtrer : `Get-VIAccount -User \| Where-Object { $_.Name -like "*prestataire*" }`. Voir aussi `Get-Help Get-VIAccount -Full` pour les jeux de paramètres de votre version |
+| `New-SsoGroup`, `Add-UserToSsoGroup`, `Get-SsoGroup`, `Get-SsoPersonUser`, `Get-SsoLockoutPolicy`, `Get-SsoPasswordPolicy` : `The term '...' is not recognized as a name of a cmdlet` (2.8.2, 2.8.3, 2.8.4) | Même cause que `Connect-SsoAdminServer` : le module `VMware.vSphere.SsoAdmin` est absent du lab | Créer le groupe et ajouter les membres dans le vSphere Client (Administration, Single Sign On, Users and Groups, Groups, Add Group, puis Add Members), voir 2.8.3. Politiques de verrouillage et de mots de passe : Administration, Single Sign On, Configuration, Local Accounts, voir 2.8.4 |
+| `Connect-SsoAdminServer: The term 'Connect-SsoAdminServer' is not recognized as a name of a cmdlet` (idem `New-SsoPersonUser`) (2.8) | Le module `VMware.vSphere.SsoAdmin` n'est pas installé ou pas importé dans la session. Il est distinct de VMware.PowerCLI | `Get-Module -ListAvailable VMware.vSphere.SsoAdmin` puis `Import-Module VMware.vSphere.SsoAdmin`. Dans le lab HOL, le module n'est pas disponible : **créer l'utilisateur dans le vSphere Client** (Administration, Single Sign On, Users and Groups, Users, Add), voir 2.8.2. Ailleurs, `Install-Module VMware.vSphere.SsoAdmin -Scope CurrentUser` (nécessite Internet) |
+| `Insufficient resources to satisfy configured failover level for vSphere HA` au `Move-VM`, puis `Set-VMHost -State Maintenance` bloqué à 0 % (1.3.1) | Le cluster `Cluster-CLI` n'a qu'un hôte et le contrôle d'admission HA (niveau 1) refuse toute VM entrante. Les VM restées sur `esx-02a` ne peuvent pas partir, donc le mode maintenance ne se termine pas | `Ctrl+C`, puis `Get-Task -Status Running \| Stop-Task -Confirm:$false`. Désactiver l'admission control (`Set-Cluster -HAAdmissionControlEnabled:$false`), refaire les `Move-VM`, la maintenance et le `Move-VMHost`, puis le réactiver en 1.6.1 |
+| `The specified VM ... is not under the cluster Cluster-CLI` et `You must specify at least 2 virtual machines` avec `New-DrsRule` (1.6.2) | Les VM sont sur un hôte resté hors de `Cluster-CLI` (cas constaté : `esx-02a` encore dans `RegionA01-COMP01`, 1.3.1 non terminée pour le second hôte), ou `$cluster` désigne un autre cluster | Vérifier avec `Get-Cluster -VM`, déplacer les hôtes (1.3.1) puis les VM dans `Cluster-CLI` avec `Move-VM`, relancer `New-DrsRule` |
+| `Parameters for device 'ide0:0' may not be modified while the virtual machine is powered on` avec `Set-CDDrive` (1.3) | Le lecteur CD est sur un contrôleur IDE : modification impossible VM allumée | `Stop-VM`, puis `Set-CDDrive -NoMedia`, puis `Start-VM` |
+| `Set-CDDrive : A parameter cannot be found that matches parameter name 'ContentLibraryIso'` (1.3) | Version de PowerCLI trop ancienne : le paramètre n'existe pas | Retrouver l'ISO sur le datastore (`New-PSDrive -PSProvider VimDatastore` puis `Get-ChildItem`) et monter avec `-IsoPath $isoFile.DatastoreFullPath`, ou passer par Edit Settings dans le vSphere Client |
+| `VDPortgroup with name 'PG-Serveurs-CLI' was not found` à la création de la VM (1.3) | Le VDS et ses port groups ne sont créés qu'au module 2.3. Le module 1 est fait avant | Utiliser le port group standard `VM Network` : `$vmPortGroup = Get-VirtualPortGroup -VMHost $h1 -Name "VM Network"`. Le README le fait maintenant automatiquement si `PG-Serveurs-CLI` est absent |
+| `Get-Datastore -Name "ds-nfs-cli"` ne retourne rien (ou erreur) à la création de la VM (1.3) | Les datastores `ds-nfs-cli` et `ds-iscsi-cli` ne sont créés qu'au module 3. Dans le lab, il n'existe que `ds-iscsi01` (VMFS, 55 Go libres) et `ds-nfs01` (NFS, 5,8 Go libres) | Utiliser `ds-iscsi01` : `$ds = Get-Datastore -Name "ds-iscsi01"`. Éviter `ds-nfs01`, trop petit |
+| `Set-VDSwitch : Cannot validate argument on parameter 'VDSwitch'. The argument is null or empty` (2.2, propriétés avancées) | `Get-VDSwitch -Name "VDS-CLI" -ErrorAction SilentlyContinue` ne trouve rien : le VDS `VDS-CLI` n'est créé qu'en 2.3.1, et `SilentlyContinue` masque l'erreur, donc `$vds` reste vide | Créer le VDS en 2.3.1 avant ces commandes, ou utiliser le nom d'un VDS existant (`Get-VDSwitch`). Le README contient maintenant un test qui affiche un message explicite |
+| `The VirtualNic capability 'vmotion' is not supported on VMHost 'esx-01a...'` avec `New-VMHostNetworkAdapter ... -VMotionEnabled $true`, puis `Failed to add VMotion tag when dedicated stack is instantiated` avec `esxcli ... tag add` (2.3.6) | L'hôte a une pile TCP/IP vMotion dédiée (netstack `vmotion`). Dans ce cas, le service vMotion ne peut pas être activé sur un VMkernel de la pile par défaut, ni par `-VMotionEnabled` ni par tag. L'interface (`vmk3`) est tout de même créée avec son IP | Supprimer `vmk3` (`Remove-VMHostNetworkAdapter`), puis la recréer sur la pile dédiée : `New-VMHostNetworkAdapter ... -NetworkStack (Get-VMHostNetworkStack -VMHost $h -Name "vmotion")`, ou via le vSphere Client (TCP/IP stack : vMotion) |
+| `UpdateLockdownExceptions` : `The user or group named 'svc-sauvegarde' does not exist` (2.5) | Le compte donné en exception n'existe pas sur l'hôte : `svc-sauvegarde` est un exemple, pas un compte du lab | Utiliser un compte existant (`root` dans le lab), ou créer le compte local avant d'activer le Lockdown. Le Lockdown reste actif malgré l'erreur : le désactiver à la fin (`ChangeLockdownMode("lockdownDisabled")`) |
+| `Set-VMHostFirewallException : Cannot change the host configuration. Required ruleset cannot be disabled` sur `"SSH Server"` (2.6) | La règle de pare-feu SSH est requise tant que le service `TSM-SSH` tourne : on a tenté de la désactiver avant d'arrêter le service | Arrêter d'abord le service (`Stop-VMHostService`, politique `Off`), vérifier `Running = False`, puis relancer la désactivation de la règle. Si cela échoue encore, laisser la règle : le service arrêté suffit |
+| `$am.LockdownMode` affiche encore `lockdownDisabled` juste après `ChangeLockdownMode("lockdownNormal")` (2.5) | `$am` est une copie des données prise avant le changement | `$am.UpdateViewData()` puis relire `$am.LockdownMode` |
+| `New-VIPermission : Could not find VIAccount with name 'VSPHERE.LOCAL\prestataire-reseau'`, suivi de `Value cannot be found for the mandatory parameter Principal` (2.7) | L'utilisateur SSO `prestataire-reseau` n'existe pas encore : il est créé en 2.8.2, après la section 2.7. Le message sur `Principal` est la conséquence : la commande n'a pas pu résoudre le compte. Une faute de frappe produit le même effet (`Entity` sans tiret, espace dans `VSPHERE. LOCAL`) | Créer l'utilisateur (`Connect-SsoAdminServer`, puis `New-SsoPersonUser`, voir 2.8.2), vérifier avec `Get-VIAccount -User | Where-Object { $_.Name -like "*prestataire*" }`, puis relancer `New-VIPermission -Entity $dc -Principal "VSPHERE.LOCAL\prestataire-reseau" -Role $role -Propagate:$true`. Le rôle `Role-Reseau-CLI` déjà créé est conservé |
 
 ---
 
@@ -2515,7 +2792,7 @@ Explication : ferme la session vCenter. Les hôtes déplacés vers `Cluster-CLI`
 | Élément | Commande de contrôle | Résultat attendu |
 | --- | --- | --- |
 | Connexion vCenter | `$global:DefaultVIServers` | `10.0.0.22` connecté |
-| Datacenter et cluster | `Get-Datacenter; Get-Cluster` | `Datacenter-CLI`, `Cluster-CLI` |
+| Datacenter et cluster | `Get-Datacenter; Get-Cluster` | `RegionA01` (existant), `Cluster-CLI` |
 | Hôtes | `Get-Cluster Cluster-CLI \| Get-VMHost` | 2 hôtes `Connected` |
 | HA et DRS | `Get-Cluster Cluster-CLI` | HA et DRS activés |
 | Réseau distribué | `Get-VDPortgroup -VDSwitch $vds` | `PG-Serveurs-CLI`, `PG-vMotion-CLI` |
