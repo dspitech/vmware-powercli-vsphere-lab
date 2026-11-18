@@ -6,7 +6,7 @@ Guide de référence et support de cours pour monter, configurer, exploiter et s
 
 | Information | Détail |
 |---|---|
-| **Titre** | Laboratoire PowerCLI sur hôte ESXi |
+| **Titre** | Laboratoire PowerCLI sur vSphere |
 | **Auteur** | LO Pape |
 | **Date de publication** | 18 novembre 2026 |
 | **Dernière mise à jour** | 18 novembre 2026 |
