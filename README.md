@@ -2,7 +2,27 @@
 
 Guide de référence et support de cours pour monter, configurer, exploiter et sécuriser une infrastructure virtualisée centralisée, dans le lab VMware Hands-on Labs (HOL).
 
-Ce document suit le manuel officiel **HOL-2535-01-VCF-L : Virtualization 101** (édition 2024), module par module. Chaque module commence par un **cours complet** (ce que l'étudiant doit connaître), puis déroule les **leçons pratiques** avec, pour chaque série de commandes, un titre, un objectif, une définition et une explication après chaque commande.
+## Informations sur le laboratoire
+
+| Information | Détail |
+|---|---|
+| **Titre** | Laboratoire PowerCLI sur hôte ESXi |
+| **Auteur** | LO Pape |
+| **Date de publication** | 18 novembre 2026 |
+| **Dernière mise à jour** | 18 novembre 2026 |
+| **Version** | 1.0.0 |
+| **Statut** | Première publication |
+| **Type de document** | Laboratoire technique |
+| **Technologie principale** | VMware PowerCLI |
+| **Environnement** | VMware ESXi |
+| **Langue** | Français |
+| **Licence** | MIT |
+
+<img width="525" height="350" alt="image" src="https://github.com/user-attachments/assets/9639c9be-4cc8-451e-b5af-a052f6045502" />
+
+Ce document suit le manuel officiel **HOL-2535-01-VCF-L : Virtualization 101** , module par module. Chaque module commence par un **cours complet** (ce que l'étudiant doit connaître), puis déroule les **leçons pratiques**. Chaque commande est présentée de la même façon : un **titre** (`Commande M3-06 : ...`), une **description** de la commande et de ses paramètres, l'**objectif** visé, les **notions à connaître** pour la comprendre, puis la commande elle-même, suivie d'une **explication** du résultat.
+
+> Déploiement en cours : ce format est appliqué aux Modules 0 et 3. Les Modules 1 et 2 gardent l'ancien format (objectif, définition, explication) en attendant leur mise à niveau.
 
 Méthode de rédaction : les définitions et procédures viennent du manuel. Les passages marqués **Complément** ajoutent des notions standard de vSphere qui ne figurent pas dans le manuel mais qui sont attendues d'un étudiant (architecture interne, mécanismes, bonnes pratiques).
 
@@ -128,6 +148,12 @@ Remarques :
 
 ### Fermer les sessions précédentes
 
+#### Commande M0-01 : Fermer les sessions PowerCLI déjà ouvertes
+
+* **Description** : `Disconnect-VIServer -Server *` ferme toutes les connexions ouvertes. `-Confirm:$false` supprime la demande de confirmation. `-ErrorAction SilentlyContinue` évite un message d'erreur s'il n'y a aucune connexion à fermer.
+* **Objectif** : Partir d'une session propre, pour qu'aucune commande ne s'exécute par erreur sur un ancien serveur (par exemple un ESXi autonome au lieu de vCenter).
+* **Notions à connaître** : Une **session PowerCLI** est une connexion authentifiée à un serveur vSphere. On peut en avoir plusieurs à la fois, et les commandes visent par défaut la liste `$global:DefaultVIServers`. Une cmdlet PowerShell suit le schéma **Verbe-Nom** (`Disconnect-VIServer`). Les **paramètres communs** (`-Confirm`, `-ErrorAction`) existent sur presque toutes les cmdlets.
+
 ```powershell
 Disconnect-VIServer -Server * -Confirm:$false -ErrorAction SilentlyContinue
 ```
@@ -136,11 +162,23 @@ Explication : ferme toute connexion ouverte (par exemple vers un ESXi autonome) 
 
 ### Désactiver le proxy et gérer les certificats
 
+#### Commande M0-02 : Désactiver le proxy pour PowerCLI
+
+* **Description** : `Set-PowerCLIConfiguration -ProxyPolicy NoProxy` indique à PowerCLI de ne pas passer par un proxy. `-Scope Session` limite le réglage à la session PowerShell courante.
+* **Objectif** : Supprimer l'erreur `proxy tunnel request failed` qui bloque la connexion à vCenter dans le lab.
+* **Notions à connaître** : Un **proxy** est un serveur intermédiaire par lequel passent les requêtes HTTP(S). PowerCLI parle à vCenter en HTTPS (port 443). La configuration PowerCLI a trois **portées** : `Session` (temporaire, perdue à la fermeture), `User` (permanente pour l'utilisateur), `AllUsers` (permanente pour tous).
+
 ```powershell
 Set-PowerCLIConfiguration -ProxyPolicy NoProxy -Scope Session -Confirm:$false
 ```
 
 Explication : le proxy du lab bloque PowerCLI (erreur `proxy tunnel request failed`). `-Scope Session` limite le changement à la session courante.
+
+#### Commande M0-03 : Accepter les certificats auto-signés du lab
+
+* **Description** : `Set-PowerCLIConfiguration -InvalidCertificateAction Ignore` demande à PowerCLI de ne pas bloquer une connexion dont le certificat n'est pas reconnu. Le réglage est limité à la session.
+* **Objectif** : Supprimer l'erreur de certificat non approuvé lors de la connexion à vCenter.
+* **Notions à connaître** : Un **certificat TLS** prouve l'identité du serveur et chiffre l'échange. vCenter génère par défaut ses certificats avec sa propre autorité (**VMCA**), que le poste client ne connaît pas : le certificat est donc dit **auto-signé**. Ignorer l'erreur expose à une attaque par interposition (*man-in-the-middle*) : acceptable en lab, à proscrire en production, où l'on installe un certificat signé par une autorité de confiance.
 
 ```powershell
 Set-PowerCLIConfiguration -InvalidCertificateAction Ignore -Scope Session -Confirm:$false
@@ -150,6 +188,12 @@ Explication : le lab utilise des certificats auto-signés. Cette option évite l
 
 ### Créer les identifiants SSO
 
+#### Commande M0-04 : Construire l'objet d'identifiants SSO
+
+* **Description** : Crée un objet `PSCredential` à partir de l'identifiant `administrator@vsphere.local` et du mot de passe. `ConvertTo-SecureString -AsPlainText -Force` transforme le texte en chaîne sécurisée, ce qui est obligatoire pour un `PSCredential`.
+* **Objectif** : Disposer d'une variable `$ssoCred` réutilisable par `Connect-VIServer`, sans retaper le mot de passe.
+* **Notions à connaître** : **SSO** (Single Sign-On) est le service d'authentification de vCenter ; son domaine par défaut est `vsphere.local`. Une **variable** PowerShell commence par `$`. Un `PSCredential` associe un nom d'utilisateur à un mot de passe `SecureString`. Écrire le mot de passe en clair dans une commande est acceptable en lab seulement ; en production on utilise `Get-Credential`, qui demande le mot de passe de façon interactive.
+
 ```powershell
 $ssoCred = New-Object System.Management.Automation.PSCredential ("administrator@vsphere.local", (ConvertTo-SecureString "VMware123!" -AsPlainText -Force))
 ```
@@ -158,6 +202,12 @@ Explication : construit un objet d'identifiants pour le compte administrateur SS
 
 ### Se connecter par adresse IP
 
+#### Commande M0-05 : Se connecter à vCenter par son adresse IP
+
+* **Description** : `Connect-VIServer -Server "10.0.0.22" -Credential $ssoCred` ouvre une session sur le serveur vCenter à l'adresse indiquée, avec les identifiants de la variable `$ssoCred`.
+* **Objectif** : Ouvrir l'accès à tout l'inventaire (datacenters, clusters, hôtes, VM) pour la suite du guide.
+* **Notions à connaître** : On se connecte à **vCenter** et non à un ESXi seul, pour accéder aux fonctions centralisées (clusters, vMotion, VDS, Content Library). On utilise l'**IP** parce que la résolution **DNS** du nom `vcsa-01a.vcf.sddc.lab` peut échouer dans le lab (`No route to host`). `Connect-VIServer` appelle l'API web de vSphere sur le port 443.
+
 ```powershell
 Connect-VIServer -Server "10.0.0.22" -Credential $ssoCred
 ```
@@ -165,6 +215,12 @@ Connect-VIServer -Server "10.0.0.22" -Credential $ssoCred
 Explication : on utilise l'IP, car la résolution DNS de `vcsa-01a.vcf.sddc.lab` peut échouer dans le lab (erreur `No route to host`).
 
 ### Vérifier la connexion
+
+#### Commande M0-06 : Vérifier que la connexion est active
+
+* **Description** : Affiche la variable globale `$global:DefaultVIServers`, qui contient la liste des serveurs vSphere auxquels PowerCLI est connecté.
+* **Objectif** : Confirmer que la session est ouverte avant d'enchaîner les commandes.
+* **Notions à connaître** : `$global:DefaultVIServers` est alimentée par `Connect-VIServer`. Chaque entrée indique le nom du serveur, le port, l'utilisateur et la version. Une liste vide signifie que la connexion a échoué ; rejouez alors les commandes précédentes et lisez le message d'erreur.
 
 ```powershell
 $global:DefaultVIServers
@@ -2335,9 +2391,15 @@ L'assistant Add Host demande : nom ou adresse, identifiants (root), résumé de 
 
 Variables de session à rejouer si vous démarrez ici :
 
+#### Commande M3-01 : Charger les objets d'inventaire du module 3
+
+* **Description** : `Get-Datacenter`, `Get-Cluster` et `Get-VMHost` retournent les objets d'inventaire correspondants, qu'on range dans les variables `$dc`, `$cluster`, `$h1` et `$h2`. `-ErrorAction SilentlyContinue` laisse `$cluster` vide, sans erreur, si le cluster n'existe pas.
+* **Objectif** : Ne retaper qu'une fois les noms de l'inventaire, puis les réutiliser dans toutes les commandes de stockage.
+* **Notions à connaître** : L'inventaire vCenter est **hiérarchique** : Datacenter, Cluster, Hôte, VM. Une cmdlet `Get-*` renvoie des **objets** avec des propriétés (nom, état, identifiant) et non du simple texte. Une variable vide (`$null`) provoque des erreurs plus loin (par exemple `The argument is null or empty`) : vérifiez `$cluster.Name` avant de l'utiliser.
+
 ```powershell
 $dc      = Get-Datacenter -Name "RegionA01"
-$cluster = Get-Cluster -Name "Cluster-CLI" -ErrorAction SilentlyContinue
+$cluster = Get-Cluster -Name "Cluster-CLI" -ErrorAction SilentlyContinue   # vide si le cluster n'a pas encore été créé (1.3.1)
 $h1 = Get-VMHost -Name 'esx-01a.vcf.sddc.lab'
 $h2 = Get-VMHost -Name 'esx-02a.vcf.sddc.lab'
 ```
@@ -2346,17 +2408,35 @@ Explication : récupère les objets d'inventaire utilisés dans ce module.
 
 **Objectif** : repérer ce que l'hôte voit en stockage avant de créer des datastores.
 
+#### Commande M3-02 : Lister les adaptateurs de stockage de l'hôte
+
+* **Description** : `Get-VMHostHba` retourne les adaptateurs de stockage (HBA) de l'hôte. `Select-Object` ne garde que les colonnes utiles : périphérique, type, modèle, état.
+* **Objectif** : Voir par quels adaptateurs l'hôte accède au stockage (SCSI local, iSCSI, Fibre Channel).
+* **Notions à connaître** : Un **HBA** (Host Bus Adapter) est la carte, physique ou logicielle, qui relie l'hôte au stockage. Il porte un nom `vmhbaN`. Les types courants sont `Block` (SCSI local), `FibreChannel`, `iSCSI`, `ParallelSCSI`. Le **pipeline** `|` envoie le résultat d'une cmdlet à la suivante.
+
 ```powershell
 Get-VMHostHba -VMHost $h1 | Select-Object Device, Type, Model, Status
 ```
 
 Explication : liste les adaptateurs de stockage de l'hôte (adaptateurs bloc, iSCSI, Fibre Channel).
 
+#### Commande M3-03 : Lister les LUN (disques) vus par l'hôte
+
+* **Description** : `Get-ScsiLun -LunType disk` retourne les périphériques disque que l'hôte voit. La sélection affiche le nom canonique, la capacité, le fabricant, le modèle et la politique de chemins.
+* **Objectif** : Repérer les volumes disponibles pour créer des datastores, notamment la LUN iSCSI.
+* **Notions à connaître** : Une **LUN** (Logical Unit Number) est un volume bloc présenté à l'hôte par une baie. Son **CanonicalName** (par exemple `naa.6001...`) est un identifiant unique qui sert de `-Path` pour créer un datastore VMFS. La **MultipathPolicy** (MRU, Fixed, Round Robin) décide comment les E/S utilisent plusieurs chemins vers la LUN.
+
 ```powershell
 Get-ScsiLun -VMHost $h1 -LunType disk | Select-Object CanonicalName, CapacityGB, Vendor, Model, MultipathPolicy
 ```
 
 Explication : liste les disques et LUN visibles avec leur capacité et leur politique de chemins.
+
+#### Commande M3-04 : Lister les datastores et le nombre d'hôtes qui les voient
+
+* **Description** : `Get-Datastore` liste les datastores. L'expression `@{N='Hôtes';E={...}}` ajoute une **propriété calculée** : le nombre d'hôtes qui voient chaque datastore.
+* **Objectif** : Distinguer les datastores **partagés** (vus par plusieurs hôtes) des datastores locaux, et connaître l'espace libre.
+* **Notions à connaître** : Un **datastore** est un conteneur logique qui stocke les fichiers des VM. Les types sont `VMFS` (bloc), `NFS` (fichier) et `vsan`. Seul un datastore **partagé** permet HA, DRS et vMotion. Une **propriété calculée** (`Name` et `Expression`) crée une colonne qui n'existe pas dans l'objet d'origine.
 
 ```powershell
 Get-Datastore | Select-Object Name, Type, CapacityGB, FreeSpaceGB, @{N='Hôtes';E={($_ | Get-VMHost).Count}}
@@ -2365,6 +2445,12 @@ Get-Datastore | Select-Object Name, Type, CapacityGB, FreeSpaceGB, @{N='Hôtes';
 Explication : liste les datastores, leur type (VMFS, NFS, vSAN), leur capacité et le nombre d'hôtes qui les voient. Un datastore vu par un seul hôte est local.
 
 Le manuel présente deux datastores préconfigurés, un iSCSI (`ds-iscsi01`) et un NFS (`ds-nfs01`) : dans le vSphere Client, onglet Summary pour la capacité, Files pour le contenu, Hosts pour les hôtes connectés, VMs pour les machines hébergées.
+
+#### Commande M3-05 : Voir les VM stockées sur un datastore
+
+* **Description** : `Get-Datastore -Name "ds-nfs01" | Get-VM` liste les VM dont des fichiers se trouvent sur ce datastore. `-ErrorAction SilentlyContinue` évite une erreur si le datastore n'existe pas.
+* **Objectif** : Savoir ce qui dépend d'un datastore avant de le modifier, le vider ou le mettre en maintenance.
+* **Notions à connaître** : Une VM est un **ensemble de fichiers** : `.vmx` (configuration), `.vmdk` (disques), `.vswp` (swap), `.nvram`, `.log`, `.vmsd` (snapshots). Ces fichiers vivent dans un dossier du datastore. Le **pipeline** relie la cmdlet de l'objet source (datastore) à celle des objets liés (VM).
 
 ```powershell
 Get-Datastore -Name "ds-nfs01" -ErrorAction SilentlyContinue | Get-VM | Select-Object Name, PowerState
@@ -2382,11 +2468,23 @@ Explication : liste les VM hébergées sur un datastore (adaptez le nom à votre
 
 > Les valeurs de serveur et de partage proviennent du manuel HOL-2535. Adaptez-les à votre lab.
 
+#### Commande M3-06 : Monter le partage NFS sur esx-01a
+
+* **Description** : `New-Datastore -Nfs` crée un datastore à partir d'un partage NFS. `-VMHost` désigne l'hôte, `-Name` le nom du datastore, `-Path` le dossier exporté par le serveur, `-NfsHost` l'adresse du serveur NFS.
+* **Objectif** : Obtenir un premier point de stockage réseau sur l'hôte `esx-01a`.
+* **Notions à connaître** : **NFS** (Network File System) est un protocole **fichier** : un serveur (NAS) *exporte* un dossier, l'hôte le *monte*. Contrairement à VMFS, le système de fichiers est géré par le serveur et non par ESXi. Par défaut, la version est NFS 3. Le serveur doit autoriser l'accès de l'hôte dans sa liste d'export. Le trafic NFS passe par une interface **VMkernel**.
+
 ```powershell
 New-Datastore -Nfs -VMHost $h1 -Name "ds-nfs-cli" -Path "/mnt/NFS02" -NfsHost "10.10.20.60"
 ```
 
 Explication : monte le partage sur `esx-01a` et crée le datastore. `-Path` est le dossier exporté, `-NfsHost` le serveur NFS. Par défaut, c'est NFS 3.
+
+#### Commande M3-07 : Monter le même partage NFS sur esx-02a
+
+* **Description** : Même commande, avec `-VMHost $h2`, mêmes `-Name`, `-Path` et `-NfsHost`.
+* **Objectif** : Rendre le datastore **partagé** entre les deux hôtes du cluster.
+* **Notions à connaître** : Un datastore NFS est partagé quand chaque hôte monte **le même serveur, le même chemin et le même nom**. Sans cela, vCenter y voit des datastores différents. Le stockage partagé est le prérequis de **HA**, **DRS** et **vMotion**.
 
 ```powershell
 New-Datastore -Nfs -VMHost $h2 -Name "ds-nfs-cli" -Path "/mnt/NFS02" -NfsHost "10.10.20.60"
@@ -2394,11 +2492,25 @@ New-Datastore -Nfs -VMHost $h2 -Name "ds-nfs-cli" -Path "/mnt/NFS02" -NfsHost "1
 
 Explication : monte le même partage sur le second hôte avec le **même nom**, ce qui rend le datastore partagé par le cluster. Dans le vSphere Client, un seul assistant sélectionne plusieurs hôtes d'un coup.
 
+#### Commande M3-08 : Monter un partage en NFS 4.1 (facultatif)
+
+* **Description** : Ajoute `-FileSystemVersion "4.1"` pour demander la version 4.1 du protocole. Le chemin et le nom sont différents de la commande précédente.
+* **Objectif** : Montrer la différence entre NFS 3 et NFS 4.1. Cette commande est facultative et échoue si le serveur ne prend pas en charge la version 4.1 (c'est le cas dans le lab).
+* **Notions à connaître** : **NFS 4.1** apporte le **multipathing** (plusieurs connexions vers le serveur), l'authentification **Kerberos** et un verrouillage plus fiable. **NFS 3** est plus simple mais sans ces fonctions. On ne mélange pas NFS 3 et NFS 4.1 pour un même export. Message d'erreur attendu dans le lab : `The NFS server does not support requested NFS version over TCP`.
+
 ```powershell
 New-Datastore -Nfs -VMHost $h1 -Name "ds-nfs41-cli" -Path "/mnt/NFS41" -NfsHost "10.10.20.60" -FileSystemVersion "4.1"
 ```
 
 Explication : exemple de montage en **NFS 4.1**, qui apporte multipathing et Kerberos. Facultatif et dépendant de votre serveur NFS.
+
+> Dans le lab HOL, le serveur `10.10.20.60` n'exporte qu'en **NFS 3** : cette commande échoue avec `The NFS server does not support requested NFS version over TCP`. C'est normal, ignorez-la et passez à la suite (voir Annexe B). Le datastore `ds-nfs-cli` en NFS 3 suffit pour tout le module.
+
+#### Commande M3-09 : Vérifier le datastore NFS créé
+
+* **Description** : `Get-Datastore` filtre sur le nom et affiche le type, la capacité, l'espace libre, le serveur distant et le chemin distant.
+* **Objectif** : Contrôler que le montage est correct : bon type (`NFS`), bon serveur, bon chemin.
+* **Notions à connaître** : `RemoteHost` et `RemotePath` n'existent que pour les datastores NFS : ils reprennent l'export monté. `CapacityGB` et `FreeSpaceGB` viennent du serveur NFS : une faible capacité (quelques Go dans le lab) limite le nombre et la taille des VM qu'on peut y placer.
 
 ```powershell
 Get-Datastore -Name "ds-nfs-cli" | Select-Object Name, Type, CapacityGB, FreeSpaceGB, RemoteHost, RemotePath
@@ -2416,11 +2528,23 @@ Explication : vérifie le datastore NFS créé (serveur et chemin distants inclu
 
 ### 3.3.1 Activer l'adaptateur iSCSI logiciel
 
+#### Commande M3-10 : Activer l'adaptateur iSCSI logiciel
+
+* **Description** : `Get-VMHostStorage` récupère la configuration de stockage des deux hôtes, puis `Set-VMHostStorage -SoftwareIScsiEnabled $true` active l'initiateur iSCSI logiciel.
+* **Objectif** : Permettre à l'hôte de parler iSCSI sans carte dédiée.
+* **Notions à connaître** : **iSCSI** transporte des commandes SCSI sur un réseau IP. Le côté hôte s'appelle l'**initiateur**, le côté stockage la **cible** (*target*). L'initiateur **logiciel** est intégré à ESXi et consomme du CPU ; l'initiateur matériel est une carte spécialisée. L'activation crée un adaptateur `vmhbaN` (souvent `vmhba65`).
+
 ```powershell
 Get-VMHostStorage -VMHost $h1, $h2 | Set-VMHostStorage -SoftwareIScsiEnabled $true
 ```
 
 Explication : active l'initiateur iSCSI logiciel sur les deux hôtes. Sans adaptateur, l'hôte ne peut pas contacter de cible.
+
+#### Commande M3-11 : Vérifier l'adaptateur iSCSI et son IQN
+
+* **Description** : `Get-VMHostHba -Type iScsi` liste les adaptateurs iSCSI de chaque hôte. La sélection affiche l'hôte, le nom de l'adaptateur, le modèle et l'IQN.
+* **Objectif** : Confirmer que l'adaptateur existe et noter son nom IQN, parfois nécessaire côté baie de stockage.
+* **Notions à connaître** : L'**IQN** (iSCSI Qualified Name) identifie un initiateur ou une cible, sous la forme `iqn.1998-01.com.vmware:nom-hôte:suffixe`. La baie s'en sert pour autoriser (*masquer*) l'accès à certaines LUN.
 
 ```powershell
 Get-VMHostHba -VMHost $h1, $h2 -Type iScsi | Select-Object VMHost, Device, Model, IScsiName
@@ -2430,20 +2554,41 @@ Explication : vérifie la présence de l'adaptateur (par exemple `vmhba65`) et s
 
 ### 3.3.2 Déclarer la cible et rescanner
 
+#### Commande M3-12 : Déclarer la cible iSCSI sur chaque hôte
+
+* **Description** : Une boucle `foreach` parcourt les deux hôtes. Pour chacun, elle récupère l'adaptateur iSCSI, teste si la cible `10.10.20.60` est déjà déclarée avec `Get-IScsiHbaTarget`, et sinon l'ajoute avec `New-IScsiHbaTarget -Type Send`. La dernière commande liste les cibles déclarées.
+* **Objectif** : Dire à l'hôte où se trouve le serveur iSCSI, sans provoquer d'erreur si la cible existe déjà.
+* **Notions à connaître** : **Dynamic Discovery** (`Send` = *Send Targets*) : on donne l'adresse du serveur et l'hôte découvre ses cibles. **Static Discovery** : on saisit chaque cible à la main. Le port iSCSI par défaut est **3260**. Une boucle `foreach` répète un bloc pour chaque élément d'une liste ; `-not` inverse une condition ; `if` exécute le bloc seulement si la condition est vraie.
+
 ```powershell
 foreach ($h in @($h1, $h2)) {
   $hba = Get-VMHostHba -VMHost $h -Type iScsi
-  New-IScsiHbaTarget -IScsiHba $hba -Address "10.10.20.60" -Type Send
+  if (-not (Get-IScsiHbaTarget -IScsiHba $hba -Type Send | Where-Object { $_.Address -eq "10.10.20.60" })) {
+    New-IScsiHbaTarget -IScsiHba $hba -Address "10.10.20.60" -Type Send
+  }
 }
+Get-VMHostHba -VMHost $h1, $h2 -Type iScsi | Get-IScsiHbaTarget -Type Send | Select-Object VMHost, Address, Port
 ```
 
-Explication : ajoute l'adresse du serveur iSCSI en **Dynamic Discovery** (Send Targets) sur chaque hôte. La liste des serveurs iSCSI était vide avant. L'hôte sait maintenant où chercher les LUN.
+Explication : ajoute l'adresse du serveur iSCSI en **Dynamic Discovery** (Send Targets) sur chaque hôte, seulement si elle n'y figure pas déjà. Dans le lab HOL, la cible `10.10.20.60:3260` est souvent déjà déclarée : sans le test `if`, `New-IScsiHbaTarget` renvoie `The specified target '10.10.20.60:3260' already exists` (voir Annexe B). La dernière commande liste les cibles déclarées sur chaque hôte.
+
+#### Commande M3-13 : Rescanner les adaptateurs de stockage
+
+* **Description** : `Get-VMHostStorage -RescanAllHba` demande aux hôtes de réinterroger tous leurs adaptateurs.
+* **Objectif** : Faire apparaître les LUN que la cible présente maintenant.
+* **Notions à connaître** : ESXi ne détecte pas toujours seul les changements de stockage : un **rescan** relance la découverte des périphériques et des chemins. Après un rescan des HBA, on peut devoir rescanner aussi les volumes VMFS (`-RescanVmfs`).
 
 ```powershell
 Get-VMHostStorage -VMHost $h1, $h2 -RescanAllHba
 ```
 
 Explication : rescanne tous les adaptateurs pour interroger la cible et découvrir les LUN.
+
+#### Commande M3-14 : Repérer la LUN iSCSI à utiliser
+
+* **Description** : `Get-ScsiLun -LunType disk` liste les disques. `Where-Object` filtre sur la capacité arrondie à 45 Go avec `[math]::Round(...)`. `Select-Object` affiche le nom canonique et la capacité.
+* **Objectif** : Identifier la LUN iSCSI du manuel (45 Go) à transformer en datastore.
+* **Notions à connaître** : **Where-Object** filtre les objets selon une condition (`-eq` signifie *égal*). Ici on identifie la LUN par sa taille, ce qui marche seulement parce que le lab la rend reconnaissable : **adaptez la valeur à votre lab** et vérifiez que la LUN n'est pas déjà utilisée par un datastore, sous peine d'effacer des données.
 
 ```powershell
 Get-ScsiLun -VMHost $h1 -LunType disk | Where-Object { [math]::Round($_.CapacityGB) -eq 45 } | Select-Object CanonicalName, CapacityGB
@@ -2453,6 +2598,12 @@ Explication : vérifie que les disques iSCSI sont visibles. Le manuel affiche de
 
 ### 3.3.3 Créer le datastore VMFS
 
+#### Commande M3-15 : Formater la LUN en datastore VMFS 6
+
+* **Description** : Sélectionne la première LUN de 45 Go dans `$lun`, puis `New-Datastore -Vmfs` la formate en VMFS version 6 sous le nom `ds-iscsi-cli`. `-Path` reçoit le nom canonique de la LUN.
+* **Objectif** : Obtenir un datastore en mode bloc, utilisable par les VM.
+* **Notions à connaître** : **VMFS** (Virtual Machine File System) est le système de fichiers **en cluster** de VMware : plusieurs hôtes lisent et écrivent en même temps sur le même volume, grâce à un verrouillage fin. **VMFS 6** gère les grands disques et récupère l'espace libéré automatiquement. **Le formatage efface la LUN.** `Select-Object -First 1` ne garde que le premier résultat.
+
 ```powershell
 $lun = Get-ScsiLun -VMHost $h1 -LunType disk | Where-Object { [math]::Round($_.CapacityGB) -eq 45 } | Select-Object -First 1
 New-Datastore -Vmfs -VMHost $h1 -Name "ds-iscsi-cli" -Path $lun.CanonicalName -FileSystemVersion 6
@@ -2460,11 +2611,23 @@ New-Datastore -Vmfs -VMHost $h1 -Name "ds-iscsi-cli" -Path $lun.CanonicalName -F
 
 Explication : formate la LUN choisie en VMFS 6 et crée le datastore. Vérifiez que la LUN n'est pas déjà utilisée.
 
+#### Commande M3-16 : Faire voir le nouveau volume VMFS au second hôte
+
+* **Description** : `Get-VMHostStorage -VMHost $h2 -RescanVmfs` rescanne les volumes VMFS de `esx-02a`.
+* **Objectif** : Faire apparaître sur le second hôte le datastore créé depuis le premier.
+* **Notions à connaître** : Une LUN présentée aux deux hôtes contient **un seul** système de fichiers VMFS. Le second hôte n'a besoin que d'un rescan pour le voir ; il ne faut pas le formater une seconde fois.
+
 ```powershell
 Get-VMHostStorage -VMHost $h2 -RescanVmfs
 ```
 
 Explication : rescanne les volumes VMFS sur `esx-02a` pour qu'il voie le nouveau datastore.
+
+#### Commande M3-17 : Confirmer que les deux hôtes voient le datastore
+
+* **Description** : `Get-Datastore -Name "ds-iscsi-cli" | Get-VMHost` liste les hôtes connectés à ce datastore.
+* **Objectif** : Valider que le datastore iSCSI est bien partagé.
+* **Notions à connaître** : Un datastore **vu par tous les hôtes du cluster** est la condition de vMotion, de HA et de DRS. Si un hôte manque, relancez les rescans ou vérifiez le masquage de la LUN côté baie.
 
 ```powershell
 Get-Datastore -Name "ds-iscsi-cli" | Get-VMHost | Select-Object Name
@@ -2478,6 +2641,12 @@ Explication : confirme que les deux hôtes voient le datastore.
 
 **Objectif** : intégrer un nouvel hôte (`esx-03a` dans le manuel) en lui présentant le stockage existant, puis l'activer dans le cluster. Si votre lab ne compte que deux hôtes, lisez cette section comme un exemple et adaptez le nom.
 
+#### Commande M3-18 : Ajouter un hôte au datacenter
+
+* **Description** : Crée d'abord un objet d'identifiants `root`, puis `Add-VMHost` ajoute l'hôte `esx-03a` à vCenter, dans le datacenter `$dc`. `-Force` accepte l'empreinte du certificat de l'hôte.
+* **Objectif** : Placer un nouvel hôte ESXi sous la gestion de vCenter.
+* **Notions à connaître** : Un hôte ESXi peut être **autonome** ou **géré** par vCenter. À l'ajout, vCenter installe des agents sur l'hôte (agent de gestion `vpxa`, agent HA `fdm`) et lui associe une licence (évaluation par défaut). L'**empreinte (thumbprint)** du certificat identifie l'hôte ; `-Force` l'accepte sans demander. Le **Lockdown Mode** peut être choisi à l'ajout (voir Module 2).
+
 ```powershell
 $h3cred = New-Object System.Management.Automation.PSCredential ("root", (ConvertTo-SecureString "VMware123!" -AsPlainText -Force))
 $h3 = Add-VMHost -Name "esx-03a.vcf.sddc.lab" -Location $dc -Credential $h3cred -Force
@@ -2485,11 +2654,23 @@ $h3 = Add-VMHost -Name "esx-03a.vcf.sddc.lab" -Location $dc -Credential $h3cred 
 
 Explication : ajoute l'hôte au datacenter (équivalent de l'assistant Add Host : nom, identifiants, résumé, licence, Lockdown, emplacement des VM). `-Force` accepte l'empreinte du certificat de l'hôte. Le Lockdown Mode peut être choisi dans l'assistant, laissé par défaut ici.
 
+#### Commande M3-19 : Mettre l'hôte en mode maintenance
+
+* **Description** : `Set-VMHost -State Maintenance` met l'hôte en maintenance. `-Confirm:$false` supprime la confirmation.
+* **Objectif** : Vérifier la configuration du nouvel hôte avant qu'il n'accueille des VM.
+* **Notions à connaître** : Un hôte en **mode maintenance** n'accepte plus de VM et ne peut plus en démarrer. Si DRS est actif, il évacue les VM allumées ; sinon il faut les migrer à la main, faute de quoi la commande reste à `percent complete: 0`. Les VM de service **vCLS** sont gérées automatiquement par vCenter.
+
 ```powershell
 Set-VMHost -VMHost $h3 -State Maintenance -Confirm:$false
 ```
 
 Explication : met l'hôte en maintenance pour vérifier sa configuration avant de l'intégrer au cluster, comme dans le manuel. Il n'accepte alors aucune VM.
+
+#### Commande M3-20 : Monter les datastores NFS sur le nouvel hôte
+
+* **Description** : Même commande `New-Datastore -Nfs`, avec `-VMHost $h3`, le même nom, le même chemin et le même serveur que sur les autres hôtes.
+* **Objectif** : Donner au nouvel hôte l'accès aux datastores NFS déjà utilisés par le cluster.
+* **Notions à connaître** : Un hôte qui rejoint un cluster doit voir **tous** les datastores partagés, avec les mêmes noms. Sinon, une VM qui migre ou redémarre sur cet hôte ne trouve pas ses fichiers. Répétez la commande pour chaque datastore NFS du cluster.
 
 ```powershell
 New-Datastore -Nfs -VMHost $h3 -Name "ds-nfs-cli" -Path "/mnt/NFS02" -NfsHost "10.10.20.60"
@@ -2497,13 +2678,28 @@ New-Datastore -Nfs -VMHost $h3 -Name "ds-nfs-cli" -Path "/mnt/NFS02" -NfsHost "1
 
 Explication : monte le datastore NFS existant sur le nouvel hôte. Répétez pour chaque datastore NFS (le manuel monte `ds-nfs01` et `ds-nfs02`).
 
+#### Commande M3-21 : Activer iSCSI, déclarer la cible et rescanner sur le nouvel hôte
+
+* **Description** : Active l'initiateur iSCSI logiciel sur `$h3`, déclare la cible `10.10.20.60` seulement si elle n'existe pas déjà, puis rescanne tous les adaptateurs.
+* **Objectif** : Donner au nouvel hôte l'accès aux LUN iSCSI et donc aux datastores VMFS partagés.
+* **Notions à connaître** : Les trois étapes iSCSI d'un nouvel hôte sont toujours les mêmes : **1.** activer l'initiateur, **2.** déclarer la cible, **3.** rescanner. Un datastore VMFS déjà créé n'est **pas reformaté** : l'hôte le détecte simplement.
+
 ```powershell
 Get-VMHostStorage -VMHost $h3 | Set-VMHostStorage -SoftwareIScsiEnabled $true
-New-IScsiHbaTarget -IScsiHba (Get-VMHostHba -VMHost $h3 -Type iScsi) -Address "10.10.20.60" -Type Send
+$hba3 = Get-VMHostHba -VMHost $h3 -Type iScsi
+if (-not (Get-IScsiHbaTarget -IScsiHba $hba3 -Type Send | Where-Object { $_.Address -eq "10.10.20.60" })) {
+  New-IScsiHbaTarget -IScsiHba $hba3 -Address "10.10.20.60" -Type Send
+}
 Get-VMHostStorage -VMHost $h3 -RescanAllHba
 ```
 
-Explication : active l'iSCSI logiciel, ajoute la cible (manuel : serveur `10.10.20.60`) puis rescanne. Les deux disques iSCSI de 45 Go doivent apparaître, puis les datastores iSCSI deviennent visibles.
+Explication : active l'iSCSI logiciel, ajoute la cible (manuel : serveur `10.10.20.60`) seulement si elle n'est pas déjà déclarée (dans le lab HOL elle l'est souvent : erreur `already exists`, sans gravité, voir Annexe B), puis rescanne. Les deux disques iSCSI de 45 Go doivent apparaître, puis les datastores iSCSI deviennent visibles.
+
+#### Commande M3-22 : Vérifier les datastores vus par le nouvel hôte
+
+* **Description** : `Get-VMHost -Name $h3.Name | Get-Datastore` liste les datastores accessibles, avec leur type.
+* **Objectif** : Contrôler que les datastores NFS et VMFS sont tous visibles avant d'intégrer l'hôte au cluster.
+* **Notions à connaître** : Comparez cette liste à celle des autres hôtes. Un datastore manquant donnera plus tard des erreurs de vMotion ou de redémarrage HA (par exemple `datastore not accessible`).
 
 ```powershell
 Get-VMHost -Name $h3.Name | Get-Datastore | Select-Object Name, Type
@@ -2511,12 +2707,24 @@ Get-VMHost -Name $h3.Name | Get-Datastore | Select-Object Name, Type
 
 Explication : vérifie que les datastores NFS et iSCSI sont visibles sur le nouvel hôte.
 
+#### Commande M3-23 : Intégrer l'hôte au cluster et le sortir de maintenance
+
+* **Description** : Vérifie que `Cluster-CLI` existe et le crée au besoin (`New-Cluster`, DRS et HA activés, contrôle d'admission HA désactivé). `Move-VMHost` déplace l'hôte dans le cluster, puis `Set-VMHost -State Connected` le sort du mode maintenance.
+* **Objectif** : Mettre l'hôte au service du cluster, prêt à accueillir des VM.
+* **Notions à connaître** : Un **cluster** mutualise les ressources de ses hôtes et active **HA** (redémarrage automatique) et **DRS** (équilibrage). `Move-VMHost` déplace un hôte entre clusters d'**un même datacenter**. Le **contrôle d'admission HA** réserve de la capacité pour un basculement : on le désactive temporairement tant que le cluster n'a qu'un hôte. À l'entrée dans un cluster HA, l'agent HA est configuré avant que l'hôte passe à l'état normal.
+
 ```powershell
+$cluster = Get-Cluster -Name "Cluster-CLI" -ErrorAction SilentlyContinue
+if (-not $cluster) {
+  $cluster = New-Cluster -Name "Cluster-CLI" -Location $dc -DrsEnabled -HAEnabled
+  Set-Cluster -Cluster $cluster -HAAdmissionControlEnabled:$false -Confirm:$false
+}
+$cluster.Name
 Move-VMHost -VMHost $h3 -Destination $cluster
 Set-VMHost -VMHost $h3 -State Connected -Confirm:$false
 ```
 
-Explication : déplace l'hôte dans le cluster puis le sort du mode maintenance. Si HA est activé, l'agent HA est configuré et démarré avant que l'hôte affiche l'état Normal (un rafraîchissement peut être nécessaire). L'hôte peut alors accueillir des VM. Dans le manuel, le réseau de VM, le vMotion et le stockage IP sont préconfigurés sur cet hôte. Idéalement, on l'ajoute au VDS **avant** de le sortir de maintenance (`Add-VDSwitchVMHost`).
+Explication : vérifie d'abord que `Cluster-CLI` existe et le crée sinon (après une remise à zéro du lab, `$cluster` est vide et `Move-VMHost` échoue avec `The argument is null or empty`, voir Annexe B). `$cluster.Name` doit afficher `Cluster-CLI`. Le contrôle d'admission HA est désactivé temporairement, comme en 1.3.1. Ensuite, la commande déplace l'hôte dans le cluster puis le sort du mode maintenance. Écrivez `-Confirm:$false` sans espace après les deux-points. Si HA est activé, l'agent HA est configuré et démarré avant que l'hôte affiche l'état Normal (un rafraîchissement peut être nécessaire). L'hôte peut alors accueillir des VM. Dans le manuel, le réseau de VM, le vMotion et le stockage IP sont préconfigurés sur cet hôte. Idéalement, on l'ajoute au VDS **avant** de le sortir de maintenance (`Add-VDSwitchVMHost`).
 
 ---
 
@@ -2526,11 +2734,57 @@ Explication : déplace l'hôte dans le cluster puis le sort du mode maintenance.
 
 **Définition** : voir 3.0.6. Dans le vSphere Client : clic droit sur la VM, Migrate, **Change storage only**, choix du datastore et du format de disque.
 
+**Prérequis** : la VM `VM-vCenter-CLI` (créée en 1.3.2) et les datastores `ds-nfs-cli` (3.2) et `ds-iscsi-cli` (3.3.3). Après une remise à zéro du lab, ils n'existent plus. Vérifiez d'abord :
+
+#### Commande M3-24 : Vérifier les prérequis du Storage vMotion
+
+* **Description** : Cherche la VM `VM-vCenter-CLI` (sans erreur si elle est absente) et liste les datastores avec leur capacité et leur espace libre.
+* **Objectif** : S'assurer que la VM et les datastores de destination existent avant de migrer.
+* **Notions à connaître** : Storage vMotion exige une VM existante, un datastore de destination visible de l'hôte de la VM et assez d'**espace libre**. Un lab remis à zéro n'a plus les objets créés auparavant : vérifiez toujours avant d'agir.
+
+```powershell
+Get-VM -Name "VM-vCenter-CLI" -ErrorAction SilentlyContinue | Select-Object Name, PowerState, VMHost
+Get-Datastore | Select-Object Name, Type, CapacityGB, FreeSpaceGB
+```
+
+Explication : si la première commande ne renvoie rien, la VM est absente (voir Annexe B : `VM with name 'VM-vCenter-CLI' was not found`). La seconde liste les datastores disponibles : `ds-nfs-cli` et `ds-iscsi-cli` doivent y figurer.
+
+#### Commande M3-25 : Recréer et allumer la VM de test
+
+* **Description** : Si la VM n'existe pas, `New-VM` la crée : 2 vCPU, 2 Go de RAM, disque de 20 Go en Thin, réseau choisi, système invité `ubuntu64Guest`. `Start-VM` l'allume ensuite.
+* **Objectif** : Disposer d'une VM allumée pour tester une migration de stockage **à chaud**.
+* **Notions à connaître** : Une **VM** est un ensemble de fichiers défini par son matériel virtuel (vCPU, RAM, disque, carte réseau). Le format **Thin** n'alloue l'espace qu'à l'usage. Le **GuestId** indique le système invité pour adapter les réglages. Une VM sans système installé peut quand même être allumée et migrée.
+
+```powershell
+if (-not (Get-VM -Name "VM-vCenter-CLI" -ErrorAction SilentlyContinue)) {
+  $ds = Get-Datastore -Name "ds-iscsi01"
+  $vmPortGroup = Get-VDPortgroup -Name "PG-Serveurs-CLI" -ErrorAction SilentlyContinue
+  if (-not $vmPortGroup) { $vmPortGroup = Get-VirtualPortGroup -VMHost $h1 -Name "VM Network" }
+  New-VM -Name "VM-vCenter-CLI" -VMHost $h1 -Datastore $ds -NumCpu 2 -MemoryGB 2 -DiskGB 20 -DiskStorageFormat Thin -NetworkName $vmPortGroup.Name -GuestId 'ubuntu64Guest'
+}
+Start-VM -VM "VM-vCenter-CLI" -Confirm:$false
+Get-VM -Name "VM-vCenter-CLI" | Select-Object Name, PowerState, VMHost
+```
+
+Explication : recrée la VM de 1.3.2 seulement si elle est absente (sur `ds-iscsi01`, le datastore préconfiguré assez grand), puis l'allume pour tester une migration **à chaud**. La VM n'a pas de système installé, ce qui ne gêne pas Storage vMotion. Attention à la taille de `ds-nfs-cli` (environ 5,8 Go) : le disque est en Thin, donc il occupe très peu de place, mais si la migration vers le NFS échoue pour manque d'espace, gardez la VM sur `ds-iscsi-cli`.
+
+#### Commande M3-26 : Voir le datastore actuel de la VM
+
+* **Description** : `Get-VM | Get-Datastore` retourne les datastores qui contiennent des fichiers de la VM.
+* **Objectif** : Noter l'emplacement de départ avant la migration.
+* **Notions à connaître** : Les fichiers d'une VM résident dans un dossier du datastore ; un **disque** peut être placé sur un autre datastore que la configuration. Une VM peut donc apparaître sur **plusieurs** datastores.
+
 ```powershell
 Get-VM -Name "VM-vCenter-CLI" | Get-Datastore | Select-Object Name, Type
 ```
 
 Explication : indique le datastore actuel de la VM.
+
+#### Commande M3-27 : Migrer la VM vers le datastore iSCSI (Storage vMotion)
+
+* **Description** : `Move-VM -VM ... -Datastore ...` déplace les fichiers de la VM vers le datastore indiqué. Sans paramètre `-Destination`, la VM reste sur le même hôte : seul le stockage change.
+* **Objectif** : Déplacer le stockage de la VM sans l'arrêter.
+* **Notions à connaître** : **Storage vMotion** copie les disques vers la destination pendant que la VM tourne, tient à jour les écritures faites pendant la copie, puis bascule la VM sur le nouveau stockage. Il sert à vider un datastore avant maintenance, à changer de baie ou à rééquilibrer l'espace. L'hôte doit voir les deux datastores.
 
 ```powershell
 Move-VM -VM "VM-vCenter-CLI" -Datastore (Get-Datastore -Name "ds-iscsi-cli") -Confirm:$false
@@ -2538,11 +2792,23 @@ Move-VM -VM "VM-vCenter-CLI" -Datastore (Get-Datastore -Name "ds-iscsi-cli") -Co
 
 Explication : migre disques et fichiers de la VM vers le datastore iSCSI, VM allumée, sans interruption.
 
+#### Commande M3-28 : Migrer la VM vers le NFS en imposant le format Thin
+
+* **Description** : Même cmdlet `Move-VM`, avec le datastore NFS et `-DiskStorageFormat Thin` pour convertir le format du disque pendant la migration.
+* **Objectif** : Remettre la VM sur le NFS et économiser de l'espace avec un disque Thin.
+* **Notions à connaître** : On peut **changer le format du disque** (Thin, Thick) lors d'un Storage vMotion. Sur un datastore NFS, la prise en charge du format Thick dépend du serveur (accélération matérielle VAAI-NAS). Un datastore très petit peut refuser la migration faute d'espace.
+
 ```powershell
 Move-VM -VM "VM-vCenter-CLI" -Datastore (Get-Datastore -Name "ds-nfs-cli") -DiskStorageFormat Thin -Confirm:$false
 ```
 
 Explication : retour vers le datastore NFS en imposant le format de disque Thin (le format peut être changé pendant la migration).
+
+#### Commande M3-29 : Confirmer que la VM est sur le NFS, toujours allumée
+
+* **Description** : `Get-Datastore -Name "ds-nfs-cli" | Get-VM` liste les VM présentes sur le datastore NFS, avec leur état d'alimentation.
+* **Objectif** : Valider que la migration s'est faite sans interruption.
+* **Notions à connaître** : Si `PowerState` vaut `PoweredOn` après la migration, la bascule s'est faite **à chaud**, c'est le principe de Storage vMotion.
 
 ```powershell
 Get-Datastore -Name "ds-nfs-cli" | Get-VM | Select-Object Name, PowerState
@@ -2558,11 +2824,23 @@ Explication : confirme que la VM est listée sur le datastore NFS et toujours al
 
 **Définition** : un disque virtuel est composé d'un ou plusieurs fichiers qui apparaissent comme un seul disque au système invité. Les disques sont **portables entre hôtes**. L'assistant de création peut ajouter des disques ; ici on travaille sur une VM existante (le manuel utilise `Windows10`, disque unique de 30 Go).
 
+#### Commande M3-30 : Lister les disques virtuels de la VM
+
+* **Description** : `Get-HardDisk -VM ...` retourne les disques de la VM : nom, capacité, format et chemin du fichier `.vmdk`.
+* **Objectif** : Connaître l'état des disques avant de les modifier.
+* **Notions à connaître** : Un **disque virtuel** est un fichier `.vmdk` (descripteur et fichier de données) rattaché à un **contrôleur SCSI virtuel**. Le chemin `Filename` a la forme `[datastore] dossier/fichier.vmdk`. Les disques s'appellent `Hard disk 1`, `Hard disk 2`, etc.
+
 ```powershell
 Get-HardDisk -VM "VM-vCenter-CLI" | Select-Object Name, CapacityGB, StorageFormat, Filename
 ```
 
 Explication : vérifie la configuration initiale (le manuel note un seul disque de 30 Go).
+
+#### Commande M3-31 : Ajouter un disque de 5 Go à la VM
+
+* **Description** : `New-HardDisk -VM ... -CapacityGB 5 -StorageFormat Thin` crée un nouveau disque virtuel Thin de 5 Go et l'attache à la VM.
+* **Objectif** : Ajouter de la capacité de stockage à une VM.
+* **Notions à connaître** : L'ajout d'un disque se fait en général **à chaud**. Le disque doit ensuite être **initialisé, partitionné et formaté dans le système invité** pour être utilisable. `Thin` n'alloue l'espace qu'au fur et à mesure.
 
 ```powershell
 New-HardDisk -VM "VM-vCenter-CLI" -CapacityGB 5 -StorageFormat Thin
@@ -2570,11 +2848,23 @@ New-HardDisk -VM "VM-vCenter-CLI" -CapacityGB 5 -StorageFormat Thin
 
 Explication : ajoute un second disque de 5 Go en Thin (équivalent de Edit Settings, Add New Device, Hard Disk). Pour la Fault Tolerance, utilisez `-StorageFormat EagerZeroedThick`.
 
+#### Commande M3-32 : Agrandir le premier disque
+
+* **Description** : `Get-HardDisk` retrouve `Hard disk 1`, puis `Set-HardDisk -CapacityGB 22` porte sa capacité à 22 Go.
+* **Objectif** : Augmenter la taille d'un disque existant.
+* **Notions à connaître** : On peut **agrandir** un disque virtuel mais **jamais le réduire**. L'agrandissement est refusé si la VM a des snapshots. Après l'opération, il faut étendre la **partition** et le système de fichiers dans le système invité pour utiliser l'espace ajouté.
+
 ```powershell
 Get-HardDisk -VM "VM-vCenter-CLI" | Where-Object { $_.Name -eq "Hard disk 1" } | Set-HardDisk -CapacityGB 22 -Confirm:$false
 ```
 
 Explication : agrandit le disque 1 (le manuel passe de 30 à 32 Go). On ne peut que **augmenter** la taille, puis il faut étendre la partition et le système de fichiers dans le système invité.
+
+#### Commande M3-33 : Comparer espace provisionné et espace utilisé
+
+* **Description** : `Get-VM` affiche `ProvisionedSpaceGB` (espace promis) et `UsedSpaceGB` (espace réellement occupé).
+* **Objectif** : Voir l'effet du Thin Provisioning.
+* **Notions à connaître** : L'espace **provisionné** est la somme des tailles de disques ; l'espace **utilisé** est ce qui est écrit. L'écart illustre la **sur-allocation** (*overcommit*) du stockage : tant qu'on surveille l'espace libre, c'est un gain ; sinon, un datastore plein arrête les VM.
 
 ```powershell
 Get-VM -Name "VM-vCenter-CLI" | Select-Object Name, ProvisionedSpaceGB, UsedSpaceGB
@@ -2590,17 +2880,35 @@ Explication : montre l'effet du Thin Provisioning : l'espace réellement consomm
 
 **Définition** : voir 3.0.7. Déroulé du manuel : prendre le snapshot `Snapshot #1` sans mémoire, éteindre la VM, passer la mémoire à 4 Go, vérifier dans Summary, puis **Revert** depuis le Snapshot Manager.
 
+#### Commande M3-34 : Prendre un snapshot de la VM
+
+* **Description** : `New-Snapshot` crée un snapshot nommé « Snapshot #1 » avec une description. `-Memory:$false` ne capture pas la mémoire. `-Quiesce:$false` ne demande pas la mise au repos du système de fichiers.
+* **Objectif** : Figer l'état de la VM avant de la modifier, pour pouvoir revenir en arrière.
+* **Notions à connaître** : Un **snapshot** fige le disque d'origine en lecture seule et envoie les nouvelles écritures dans un **disque delta** (`-000001.vmdk`). Il conserve la configuration, l'état d'alimentation, l'état des disques et, en option, la mémoire. **Quiesce** demande à VMware Tools un système de fichiers cohérent. Un snapshot **n'est pas une sauvegarde**.
+
 ```powershell
 New-Snapshot -VM "VM-vCenter-CLI" -Name "Snapshot #1" -Description "Snapshot taken prior to VM settings change" -Memory:$false -Quiesce:$false
 ```
 
 Explication : prend un snapshot sans mémoire ni quiescence (le manuel décoche la mémoire pour éviter des entrées-sorties inutiles). Ajoutez `-Memory:$true` pour inclure la mémoire.
 
+#### Commande M3-35 : Lister les snapshots
+
+* **Description** : `Get-Snapshot -VM ...` affiche les snapshots de la VM : nom, description, date, taille et indicateur du snapshot courant.
+* **Objectif** : Contrôler la présence et la taille des snapshots.
+* **Notions à connaître** : Les snapshots forment un **arbre** (Snapshot Manager). `IsCurrent` indique la position actuelle de la VM dans l'arbre. Un snapshot qui grossit signale un delta qui s'allonge : à surveiller.
+
 ```powershell
 Get-Snapshot -VM "VM-vCenter-CLI" | Select-Object Name, Description, Created, SizeGB, IsCurrent
 ```
 
 Explication : affiche les snapshots de la VM, équivalent de Manage Snapshots et de la fenêtre de détails.
+
+#### Commande M3-36 : Modifier la VM après le snapshot (test)
+
+* **Description** : `Stop-VM` éteint la VM de façon **brutale** (comme un arrêt du courant). `Set-VM -MemoryGB 4` change la mémoire à 4 Go. La dernière commande vérifie la valeur.
+* **Objectif** : Faire une modification volontaire pour la défaire ensuite avec le snapshot.
+* **Notions à connaître** : `Stop-VM` coupe l'alimentation sans arrêt propre ; pour un arrêt propre, on utilise `Stop-VMGuest` (VMware Tools requis). Changer la mémoire d'une VM exige en général de l'éteindre, sauf si l'ajout à chaud est activé.
 
 ```powershell
 Stop-VM -VM "VM-vCenter-CLI" -Confirm:$false
@@ -2610,12 +2918,24 @@ Get-VM "VM-vCenter-CLI" | Select-Object Name, MemoryGB
 
 Explication : éteint brutalement la VM (rapide pour le lab, pas la bonne pratique, qui est un arrêt propre avec `Stop-VMGuest`), passe la mémoire à 4 Go et vérifie.
 
+#### Commande M3-37 : Restaurer le snapshot (Revert)
+
+* **Description** : `Set-VM -VM ... -Snapshot ...` ramène la VM à l'état du snapshot. La commande suivante affiche la mémoire et l'état d'alimentation.
+* **Objectif** : Annuler les modifications faites depuis le snapshot.
+* **Notions à connaître** : **Revert** abandonne ce qui a été fait depuis le snapshot et ramène la VM à son état de ce moment, y compris l'état d'alimentation : un snapshot pris sans mémoire restaure une VM **hors tension**. Le snapshot reste disponible pour d'autres retours.
+
 ```powershell
 Set-VM -VM "VM-vCenter-CLI" -Snapshot (Get-Snapshot -VM "VM-vCenter-CLI" -Name "Snapshot #1") -Confirm:$false
 Get-VM "VM-vCenter-CLI" | Select-Object Name, MemoryGB, PowerState
 ```
 
 Explication : restaure l'état du snapshot (**Revert**). La mémoire doit revenir à sa valeur d'origine. La VM prend l'état d'alimentation du snapshot.
+
+#### Commande M3-38 : Supprimer les snapshots
+
+* **Description** : `Get-Snapshot | Remove-Snapshot` supprime tous les snapshots de la VM.
+* **Objectif** : Nettoyer et libérer l'espace occupé par les disques delta.
+* **Notions à connaître** : **Delete** ne revient pas en arrière : il **fusionne** les données du delta dans le disque d'origine (consolidation) puis supprime le delta. Ne confondez pas **Revert** (abandon des changements) et **Delete** (validation). Un snapshot ancien rend la suppression longue.
 
 ```powershell
 Get-Snapshot -VM "VM-vCenter-CLI" | Remove-Snapshot -Confirm:$false
@@ -2631,11 +2951,23 @@ Explication : supprime le snapshot (Delete) et consolide les disques. À faire d
 
 **Définition** : voir 3.0.8. L'assistant du vSphere Client (Storage, clic droit sur le datacenter, Storage, New Datastore Cluster) enchaîne : nom et emplacement, **automatisation Storage DRS**, **paramètres d'exécution** (sensibilité de l'équilibrage), sélection des clusters et hôtes (les hôtes sans cluster sont à choisir à part), sélection des datastores, puis récapitulatif. Le manuel crée `DatastoreCluster-01` avec deux datastores iSCSI et laisse les valeurs par défaut.
 
+#### Commande M3-39 : Créer le datastore cluster
+
+* **Description** : `New-DatastoreCluster -Name ... -Location $dc` crée un datastore cluster dans le datacenter et le range dans `$dsc`.
+* **Objectif** : Regrouper des datastores sous une gestion commune.
+* **Notions à connaître** : Un **datastore cluster** (*storage pod*) regroupe des datastores comme un cluster regroupe des hôtes. Il offre le **placement initial** des VM et l'équilibrage par **Storage DRS (SDRS)**. Les datastores NFS et VMFS ne se mélangent pas dans un même cluster.
+
 ```powershell
 $dsc = New-DatastoreCluster -Name "DatastoreCluster-CLI" -Location $dc
 ```
 
 Explication : crée le datastore cluster, géré comme une ressource unique.
+
+#### Commande M3-40 : Ajouter un datastore au datastore cluster
+
+* **Description** : `Get-Datastore -Name "ds-iscsi-cli" | Move-Datastore -Destination $dsc` déplace le datastore dans le datastore cluster.
+* **Objectif** : Faire du datastore un membre du cluster.
+* **Notions à connaître** : La capacité du datastore cluster est la **somme** de ses membres. Le datastore doit être visible des hôtes concernés et d'un type compatible avec les autres membres.
 
 ```powershell
 Get-Datastore -Name "ds-iscsi-cli" | Move-Datastore -Destination $dsc
@@ -2643,17 +2975,35 @@ Get-Datastore -Name "ds-iscsi-cli" | Move-Datastore -Destination $dsc
 
 Explication : ajoute un datastore iSCSI au cluster. Ajoutez un second datastore **du même type** (le manuel utilise deux datastores iSCSI), car on ne mélange pas NFS et VMFS dans un même cluster.
 
+#### Commande M3-41 : Régler le niveau d'automatisation de Storage DRS
+
+* **Description** : `Set-DatastoreCluster -SdrsAutomationLevel FullyAutomated` permet à SDRS d'agir seul. `-IOLoadBalanceEnabled $true` active l'équilibrage selon les entrées-sorties.
+* **Objectif** : Laisser vSphere déplacer les VM pour équilibrer espace et performances.
+* **Notions à connaître** : En mode **Manual**, SDRS fait des *recommandations* ; en mode **Fully Automated**, il migre lui-même (Storage vMotion). L'équilibrage des E/S repose sur la latence mesurée. Il fonctionne avec **Storage I/O Control (SIOC)**, qui répartit le débit selon des shares quand la latence monte.
+
 ```powershell
 Set-DatastoreCluster -DatastoreCluster $dsc -SdrsAutomationLevel FullyAutomated -IOLoadBalanceEnabled $true
 ```
 
 Explication : active Storage DRS en mode entièrement automatisé avec équilibrage des I/O. En mode `Manual`, Storage DRS ne fait que des recommandations.
 
+#### Commande M3-42 : Régler les seuils de latence et d'espace
+
+* **Description** : `-IOLatencyThresholdMillisecond 15` fixe le seuil de latence à 15 ms. `-SpaceUtilizationThresholdPercent 80` fixe le seuil d'espace utilisé à 80 %.
+* **Objectif** : Définir à partir de quand SDRS doit déplacer des VM.
+* **Notions à connaître** : SDRS agit quand un datastore dépasse l'un des deux **seuils**. Les valeurs par défaut sont proches de **80 %** d'espace et **15 ms** de latence. Des seuils trop bas provoquent trop de migrations.
+
 ```powershell
 Set-DatastoreCluster -DatastoreCluster $dsc -IOLatencyThresholdMillisecond 15 -SpaceUtilizationThresholdPercent 80
 ```
 
 Explication : règle les paramètres d'exécution : seuil de latence (15 ms) et seuil d'espace utilisé (80 %) au-delà desquels Storage DRS recommande ou effectue des migrations.
+
+#### Commande M3-43 : Vérifier le datastore cluster
+
+* **Description** : Affiche le niveau d'automatisation, l'équilibrage d'E/S, la capacité et l'espace libre, puis liste les datastores membres.
+* **Objectif** : Contrôler que la configuration SDRS et l'appartenance des datastores sont correctes.
+* **Notions à connaître** : Vérifiez que la capacité est la somme des membres et que le niveau d'automatisation est celui que vous avez choisi.
 
 ```powershell
 Get-DatastoreCluster | Select-Object Name, SdrsAutomationLevel, IOLoadBalanceEnabled, CapacityGB, FreeSpaceGB
@@ -2784,6 +3134,10 @@ Explication : ferme la session vCenter. Les hôtes déplacés vers `Cluster-CLI`
 | `Set-VMHostFirewallException : Cannot change the host configuration. Required ruleset cannot be disabled` sur `"SSH Server"` (2.6) | La règle de pare-feu SSH est requise tant que le service `TSM-SSH` tourne : on a tenté de la désactiver avant d'arrêter le service | Arrêter d'abord le service (`Stop-VMHostService`, politique `Off`), vérifier `Running = False`, puis relancer la désactivation de la règle. Si cela échoue encore, laisser la règle : le service arrêté suffit |
 | `$am.LockdownMode` affiche encore `lockdownDisabled` juste après `ChangeLockdownMode("lockdownNormal")` (2.5) | `$am` est une copie des données prise avant le changement | `$am.UpdateViewData()` puis relire `$am.LockdownMode` |
 | `New-VIPermission : Could not find VIAccount with name 'VSPHERE.LOCAL\prestataire-reseau'`, suivi de `Value cannot be found for the mandatory parameter Principal` (2.7) | L'utilisateur SSO `prestataire-reseau` n'existe pas encore : il est créé en 2.8.2, après la section 2.7. Le message sur `Principal` est la conséquence : la commande n'a pas pu résoudre le compte. Une faute de frappe produit le même effet (`Entity` sans tiret, espace dans `VSPHERE. LOCAL`) | Créer l'utilisateur (`Connect-SsoAdminServer`, puis `New-SsoPersonUser`, voir 2.8.2), vérifier avec `Get-VIAccount -User | Where-Object { $_.Name -like "*prestataire*" }`, puis relancer `New-VIPermission -Entity $dc -Principal "VSPHERE.LOCAL\prestataire-reseau" -Role $role -Propagate:$true`. Le rôle `Role-Reseau-CLI` déjà créé est conservé |
+| `New-Datastore : An error occurred during host configuration ... Mount failed ... The NFS server does not support requested NFS version over TCP` sur `-FileSystemVersion "4.1"` (3.2) | Le serveur NFS du lab (`10.10.20.60`) n'exporte qu'en NFS 3 et refuse le montage en NFS 4.1. L'exemple 4.1 est facultatif dans ce README | Ne pas monter en 4.1 : utiliser le datastore NFS 3 `ds-nfs-cli` déjà créé. Aucune action de nettoyage, le montage 4.1 n'a pas été créé (`Get-Datastore -Name "ds-nfs41-cli"` ne renvoie rien) |
+| `New-IScsiHbaTarget : The specified target '10.10.20.60:3260' already exists` (3.3.2 et 3.4) | La cible iSCSI est déjà déclarée en Dynamic Discovery sur l'hôte (préconfigurée dans le lab, ou ajoutée par un passage précédent). L'erreur est sans gravité | Ne rien refaire : vérifier avec `Get-VMHostHba -VMHost $h1, $h2 -Type iScsi \| Get-IScsiHbaTarget -Type Send`, puis passer au rescan (`-RescanAllHba`). La boucle du README teste maintenant l'existence avant d'ajouter |
+| `Move-VMHost : Cannot validate argument on parameter 'Destination'. The argument is null or empty` (3.4) | `$cluster` est vide : `Cluster-CLI` n'existe pas, car le lab a été remis à zéro et la section 1.3.1 n'a pas été rejouée (la variable est chargée avec `-ErrorAction SilentlyContinue`, donc sans message). Piège voisin : `-Confirm: $false` avec un espace après les deux-points est mal interprété | Vérifier `$cluster` (`$cluster.Name`), créer le cluster avec `New-Cluster -Name "Cluster-CLI" -Location $dc -DrsEnabled -HAEnabled` puis `Set-Cluster -Cluster $cluster -HAAdmissionControlEnabled:$false -Confirm:$false`, et relancer `Move-VMHost`. Toujours écrire `-Confirm:$false` sans espace |
+| `Get-VM : VM with name 'VM-vCenter-CLI' was not found using the specified filter(s)` (3.5) | La VM est créée en 1.3.2 et le lab a été remis à zéro (non sauvegardable) : elle n'existe plus. Un passage direct au module 3 la saute | Recréer la VM avec le bloc de prérequis de la section 3.5 (`New-VM` sur `ds-iscsi01`), la démarrer avec `Start-VM`, puis relancer le Storage vMotion. Vérifier avant avec `Get-VM -Name "VM-vCenter-CLI" -ErrorAction SilentlyContinue` |
 
 ---
 
